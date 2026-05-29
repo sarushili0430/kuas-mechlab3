@@ -49,7 +49,7 @@ cd kuas-mechlab3
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows は .venv\Scripts\activate
+source .venv/bin/activate          # Windows ネイティブは .venv\Scripts\activate（Git フックは .venv/bin 前提のため WSL 推奨）
 pip install --upgrade pip
 pip install -r requirements-dev.txt
 ```
