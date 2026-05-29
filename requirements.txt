@@ -1,0 +1,2 @@
+# Pure-Python runtime dependencies installed via pip in CI (non-ROS).
+# ROS2 package runtime dependencies belong in each package's package.xml (rosdep).
