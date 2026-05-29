@@ -16,22 +16,22 @@ pre-commit:
     # Format check on staged Python files only (fast). VS Code format-on-save
     # keeps these clean; this is the safety net. Auto-fixing is left off on
     # purpose — to format on commit instead, use:
-    #   run: black {staged_files}
+    #   run: .venv/bin/black {staged_files}
     #   stage_fixed: true
     black:
       glob: "*.py"
-      run: black --check {staged_files}
+      run: .venv/bin/black --check {staged_files}
 
     # Type-check the whole project (mypy needs full module context), but only
     # when Python files are part of the commit.
     mypy:
       glob: "*.py"
-      run: mypy
+      run: .venv/bin/mypy
 
     # Run the standalone unit tests (no coverage — kept fast).
     pytest:
       glob: "*.py"
-      run: pytest
+      run: .venv/bin/pytest
 
 commit-msg:
   skip:
@@ -41,4 +41,4 @@ commit-msg:
     # Enforce Conventional Commits on the message (feat:, fix:, docs:, ...).
     # Bypass a single commit if ever needed with: git commit --no-verify
     commitizen:
-      run: cz check --commit-msg-file {1}
+      run: .venv/bin/cz check --commit-msg-file {1}
