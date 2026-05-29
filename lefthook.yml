@@ -1,0 +1,44 @@
+# Lefthook — fast local git hooks. Docs: https://lefthook.dev
+#
+# The heavy ROS2 build/test (colcon) is intentionally left to CI only; locally
+# we run just the quick Python checks. These mirror the lint/test CI jobs, so a
+# clean pre-commit means those jobs should stay green.
+#
+# Setup (per clone):
+#   pip install -r requirements-dev.txt   # provides lefthook + black/mypy/pytest
+#   lefthook install                      # wires the hooks into .git/hooks
+pre-commit:
+  parallel: true
+  skip:
+    - merge
+    - rebase
+  commands:
+    # Format check on staged Python files only (fast). VS Code format-on-save
+    # keeps these clean; this is the safety net. Auto-fixing is left off on
+    # purpose — to format on commit instead, use:
+    #   run: black {staged_files}
+    #   stage_fixed: true
+    black:
+      glob: "*.py"
+      run: black --check {staged_files}
+
+    # Type-check the whole project (mypy needs full module context), but only
+    # when Python files are part of the commit.
+    mypy:
+      glob: "*.py"
+      run: mypy
+
+    # Run the standalone unit tests (no coverage — kept fast).
+    pytest:
+      glob: "*.py"
+      run: pytest
+
+commit-msg:
+  skip:
+    - merge
+    - rebase
+  commands:
+    # Enforce Conventional Commits on the message (feat:, fix:, docs:, ...).
+    # Bypass a single commit if ever needed with: git commit --no-verify
+    commitizen:
+      run: cz check --commit-msg-file {1}

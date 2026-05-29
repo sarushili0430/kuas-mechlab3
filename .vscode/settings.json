@@ -1,0 +1,23 @@
+{
+  // Use the interpreter from the project virtual environment so the formatter,
+  // type checker, and tests all run against the same Python / package versions
+  // as CI. Create it with:
+  //   python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+  // --- Black: format on save ---
+  // Requires the "Black Formatter" extension (ms-python.black-formatter).
+  // It picks up [tool.black] from pyproject.toml automatically.
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true
+  },
+  "black-formatter.importStrategy": "fromEnvironment",
+
+  // --- Mypy: type checking ---
+  // Requires the "Mypy Type Checker" extension (ms-python.mypy-type-checker).
+  // It picks up [tool.mypy] (strict, overrides) from pyproject.toml.
+  "mypy-type-checker.importStrategy": "fromEnvironment",
+  "mypy-type-checker.reportingScope": "workspace",
+  "python-envs.defaultEnvManager": "ms-python.python:pyenv"
+}
