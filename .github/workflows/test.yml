@@ -35,9 +35,11 @@ jobs:
 
       - name: Run pytest with coverage
         # set -o pipefail: tee を挟んでも pytest が失敗したらジョブを落とす。
+        # term 出力は Job Summary 用、JSON はコメント整形用。
         run: |
           set -o pipefail
-          pytest --cov --cov-report=term-missing | tee pytest-coverage.txt
+          pytest --cov --cov-report=term-missing --cov-report=json \
+            | tee pytest-coverage.txt
 
       - name: Write coverage to the job summary
         # Actions の実行結果ページ（Summary）にカバレッジ表を表示する。
@@ -63,5 +65,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COVERAGE_FILE: pytest-coverage.txt
+          COVERAGE_JSON: coverage.json
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/coverage-comment.sh
