@@ -47,6 +47,15 @@ testpaths = ["src/kuas_mechlab3/test"]
 [tool.coverage.run]
 branch = true
 source = ["kuas_mechlab3"]
+# The ROS2 nodes and the pyserial I/O wrapper import rclpy / pyserial, which the
+# standalone pytest job cannot load, so they are exercised by `colcon test`, not
+# here. Omit them so this report measures only the pure-Python surface (matching
+# the repo's "pure Python = pytest / ROS = colcon" split) instead of a misleading 0%.
+omit = [
+    "*/drive/serial_link.py",
+    "*/drive/mbed_driver.py",
+    "*/drive/teleop_keyboard.py",
+]
 
 [tool.coverage.report]
 show_missing = true
