@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = "kuas_mechlab3"
@@ -9,6 +12,10 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        (
+            os.path.join("share", package_name, "launch"),
+            glob(os.path.join("launch", "*launch.py")),
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -16,5 +23,10 @@ setup(
     maintainer_email="k.fuke@emobi.co.jp",
     description="KUAS MechLab3 ROS2 package.",
     license="Apache-2.0",
-    entry_points={"console_scripts": []},
+    entry_points={
+        "console_scripts": [
+            "mbed_driver = kuas_mechlab3.drive.mbed_driver:main",
+            "teleop_keyboard = kuas_mechlab3.drive.teleop_keyboard:main",
+        ],
+    },
 )

@@ -219,6 +219,51 @@ PR を作成すると後述の CI が自動で走ります。すべてのチェ�
 
 ---
 
+## ドライブトレイン (drive)
+
+ML3 4輪スキッドステアを動かす `kuas_mechlab3.drive` サブパッケージ。`geometry_msgs/Twist` を購読し、mbed ファームへシリアルで 4 輪の setpoint (`s1/s2/s3/s4/d`) を送る。`cmd_vel` は標準インターフェースなので、`teleop_keyboard` の代わりに `teleop_twist_keyboard` や nav2 をそのまま繋げられる。
+
+```
+[teleop_keyboard] --cmd_vel(Twist)--> [mbed_driver] --serial "s1/s2/s3/s4/d"--> [mbed]
+                                            └── ~/wheel_rpm, ~/wheel_pwm を publish
+```
+
+責任分離（リポジトリ方針どおり、純ロジックは pytest / ROS・I-O は colcon でテスト）:
+
+| モジュール | 責任 | テスト |
+| --- | --- | --- |
+| `kinematics.py` | Twist→4輪ミキシング（`utils.clamp` を再利用） | pytest |
+| `protocol.py` | ワイヤ形式生成 / テレメトリ解析（文字列のみ） | pytest |
+| `serial_link.py` | シリアルポート I/O（pyserial、`protocol` に委譲） | colcon |
+| `mbed_driver.py` | ROS I/O + フェイルセーフ（ウォッチドッグ / 終了時停止） | colcon |
+| `teleop_keyboard.py` | tty 入力 → cmd_vel | colcon |
+
+### 実行（ROS2 Humble 上）
+
+```bash
+colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+
+# 端末A: ドライバ（launch 経由）
+ros2 launch kuas_mechlab3 drivetrain_launch.py
+# 端末B: teleop（tty が要るので別端末で）
+ros2 run kuas_mechlab3 teleop_keyboard
+```
+
+### 主要パラメータ（mbed_driver）
+
+| 名前 | 既定 | 説明 |
+| --- | --- | --- |
+| `port` | `/dev/ttyACM0` | シリアルポート |
+| `max_linear` / `max_angular` | `0.5` / `2.0` | フルスケールの vx[m/s] / wz[rad/s] |
+| `wheel_setpoint` | `10.5` | フルスケール時の開ループ setpoint |
+| `turn_sign` | `1.0` | 旋回方向。実機が逆なら `-1.0`（REP-103: +wz=左旋回） |
+| `cmd_timeout` | `0.4` | ウォッチドッグ [s]。cmd_vel が途絶えたら全輪停止 |
+
+> ⚠️ シリアルポートは 1 プロセス占有。`mbed_driver` と素のシリアルツールは同時起動できない。
+
+---
+
 ## ディレクトリ構成
 
 ```
@@ -228,7 +273,14 @@ PR を作成すると後述の CI が自動で走ります。すべてのチェ�
 │   └── kuas_mechlab3/        # ROS2 パッケージ（ament_python）
 │       ├── kuas_mechlab3/    # パッケージ本体（Python ソース）
 │       │   ├── __init__.py
-│       │   └── utils.py      # 純 Python のヘルパー（例: clamp）
+│       │   ├── utils.py      # 純 Python のヘルパー（例: clamp）
+│       │   └── drive/        # ML3 ドライブトレイン（下記「ドライブトレイン」参照）
+│       │       ├── kinematics.py      # 純: Twist→4輪ミキシング
+│       │       ├── protocol.py        # 純: ワイヤ形式 / テレメトリ解析
+│       │       ├── serial_link.py     # シリアル I/O（pyserial）
+│       │       ├── mbed_driver.py     # ROSノード: cmd_vel→mbed
+│       │       └── teleop_keyboard.py # ROSノード: キー→cmd_vel
+│       ├── launch/           # ros2 launch ファイル
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定

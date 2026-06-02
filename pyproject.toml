@@ -30,6 +30,12 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# pyserial is an apt/pip runtime dep (declared as python3-serial in package.xml);
+# the standalone lint job does not install it, so let mypy treat it as untyped.
+module = ["serial.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 pythonpath = ["src/kuas_mechlab3"]
 testpaths = ["src/kuas_mechlab3/test"]
@@ -41,6 +47,15 @@ testpaths = ["src/kuas_mechlab3/test"]
 [tool.coverage.run]
 branch = true
 source = ["kuas_mechlab3"]
+# The ROS2 nodes and the pyserial I/O wrapper import rclpy / pyserial, which the
+# standalone pytest job cannot load, so they are exercised by `colcon test`, not
+# here. Omit them so this report measures only the pure-Python surface (matching
+# the repo's "pure Python = pytest / ROS = colcon" split) instead of a misleading 0%.
+omit = [
+    "*/drive/serial_link.py",
+    "*/drive/mbed_driver.py",
+    "*/drive/teleop_keyboard.py",
+]
 
 [tool.coverage.report]
 show_missing = true
