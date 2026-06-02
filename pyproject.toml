@@ -30,6 +30,12 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# pyserial is an apt/pip runtime dep (declared as python3-serial in package.xml);
+# the standalone lint job does not install it, so let mypy treat it as untyped.
+module = ["serial.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 pythonpath = ["src/kuas_mechlab3"]
 testpaths = ["src/kuas_mechlab3/test"]
