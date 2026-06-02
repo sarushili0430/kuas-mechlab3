@@ -264,6 +264,75 @@ ros2 run kuas_mechlab3 teleop_keyboard
 
 ---
 
+## ラズパイ実機での bring-up（config → デモ）
+
+配線済みの ML3 を Raspberry Pi（ROS2 Humble）から**設定 〜 デモ走行**まで動かす手順。**確認は必ず車輪を浮かせて**から行うこと（全開 PWM で台から飛び出す・突入電流が出る）。
+
+> **前提（このリポジトリ外で用意）**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に ML3 ファーム（Mbed / PlatformIO、`pio run -t upload`）を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=1500` ≈ 37.5%）で動く。
+
+### 1. Pi の config
+
+```bash
+# シリアルポートのアクセス権（初回のみ・再ログインで反映）
+sudo usermod -aG dialout $USER
+ls /dev/ttyACM*                  # ポート確認（通常 /dev/ttyACM0）
+
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=11          # チーム分離用。自チームの ID に変更
+```
+
+### 2. ビルド
+
+リポジトリのルートがそのまま colcon ワークスペース（`src/` を含む）。
+
+```bash
+git clone git@github.com:sarushili0430/kuas-mechlab3.git
+cd kuas-mechlab3
+rosdep install --from-paths src --ignore-src -r -y   # 初回のみ依存解決
+colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+```
+
+### 3. 起動と方向確認（車輪を浮かせて）
+
+端末を 2 つ使う（driver 起動中はシリアルを占有するため、素のシリアルツールとは併用不可）。
+
+```bash
+# 端末A: ドライバ
+ros2 launch kuas_mechlab3 drivetrain_launch.py
+# 端末B: teleop（tty が要るので別端末）
+ros2 run kuas_mechlab3 teleop_keyboard
+```
+
+ポートや旋回方向を変えるときは launch ではなくノードを直接起動して上書きする:
+
+```bash
+ros2 run kuas_mechlab3 mbed_driver --ros-args -p port:=/dev/ttyACM0 -p turn_sign:=1.0
+```
+
+**方向チェック（重要）**: `w` で前進し、`a` で**反時計回り（左旋回, REP-103）**になるか確認する。期待と逆に回るなら `turn_sign:=-1.0` で再起動。指令が届いているかはテレメトリで確認できる:
+
+```bash
+ros2 topic echo /mbed_driver/wheel_pwm
+```
+
+### 4. デモ走行
+
+teleop の端末で**キーを押している間だけ**動く（離すと停止）。
+
+| キー | 動作 |
+| --- | --- |
+| `w` / `s` | 前進 / 後退 |
+| `a` / `d` | 左旋回 / 右旋回 |
+| `q` | 停止 |
+| Ctrl+C | 終了（自動で停止を送出） |
+
+`cmd_vel` は標準インターフェースなので、teleop の代わりに `teleop_twist_keyboard` や nav2 からも走らせられる。
+
+> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。ただし **USB が物理的に抜けた場合**は現ファームが最後の指令を保持し続ける（ファーム側ウォッチドッグ未実装）。無拘束デモの前は車輪を浮かせるか有線で。初回配線時の 1 輪ずつの方向検証には、別途 bring-up 用の per-wheel jog ツール（同じ `s1/s2/s3/s4/d` パケットを送る）を driver 停止中に使う。
+
+---
+
 ## ディレクトリ構成
 
 ```
