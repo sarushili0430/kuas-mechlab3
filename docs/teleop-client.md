@@ -130,6 +130,8 @@ curl -s http://<pi>:8080/stream?topic=/front_camera/image_raw/compressed --outpu
 
 前後 2 カメラの `<img>` と、WASD を 20Hz で送る WebSocket を 1 枚にまとめた最小例。`PI` を Pi の IP に変えて、`http://` 配信か `file://` で開く（HTTPS は混在コンテンツでブロックされる）。フォーカスをこのページに当ててから WASD で操縦する。
 
+> 💾 **そのまま開ける実ファイルを [`cockpit.html`](./cockpit.html) に同梱**（リポジトリ同梱の正本）。下のリストは説明用の同一コピー。実際に使うときは `cockpit.html` を開く。
+
 ```html
 <!doctype html>
 <html lang="ja">

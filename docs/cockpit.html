@@ -1,0 +1,83 @@
+<!doctype html>
+<!--
+  ML3 リモート操縦コックピット（前後カメラ映像 + WASD 操縦）
+
+  使い方（操縦者の PC、ROS は不要）:
+    1) このファイルを PC にコピー
+    2) 下の  const PI = ... "192.168.1.42"  の IP をラズパイの IP に書き換えて保存
+    3) ダブルクリックで開く（file://）。※ HTTPS 配信は混在コンテンツでブロックされる
+    4) ページをクリックしてフォーカス → W/A/S/D で操縦（離す・閉じると停止）
+
+  前提（ラズパイ側）: cameras_launch.py（:8080）と teleop_launch.py（:9001）が起動済み。
+-->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>ML3 cockpit</title>
+  <style>
+    body { background:#111; color:#eee; font-family:sans-serif; text-align:center }
+    figure { display:inline-block; margin:8px }
+    img { width:48vw; max-width:640px; border:1px solid #444; background:#000 }
+    #status { padding:6px; font-weight:bold }
+  </style>
+</head>
+<body>
+  <h1>ML3 cockpit</h1>
+  <div id="status">WS: connecting…</div>
+  <div>
+    <figure><figcaption>front</figcaption><img id="front" alt="front"></figure>
+    <figure><figcaption>rear</figcaption><img id="rear" alt="rear"></figure>
+  </div>
+  <p>このページにフォーカスして <b>W/A/S/D</b> で操縦（離すと停止）</p>
+
+  <script>
+    // ★ ラズパイの IP に書き換える（file:// で開く場合は右の "192.168.1.42" を変更）
+    const PI = location.hostname || "192.168.1.42";
+    const CAM_PORT = 8080, WS_PORT = 9001;
+    const FRONT = "/front_camera/image_raw/compressed";
+    const REAR  = "/rear_camera/image_raw/compressed";
+    const LINEAR = 1.0, ANGULAR = 1.0, RATE_HZ = 20;  // 正規化軸の最大と送信レート
+
+    // 1) カメラ: <img> に stream URL を入れるだけ（JS で画像処理はしない）
+    front.src = `http://${PI}:${CAM_PORT}/stream?topic=${FRONT}`;
+    rear.src  = `http://${PI}:${CAM_PORT}/stream?topic=${REAR}`;
+
+    // 2) 入力: 押下中のキー集合から目標軸を計算
+    const keys = new Set();
+    addEventListener("keydown", e => keys.add(e.key.toLowerCase()));
+    addEventListener("keyup",   e => keys.delete(e.key.toLowerCase()));
+    addEventListener("blur", () => keys.clear());   // ウィンドウ非アクティブで停止
+    function currentAxes() {
+      let vx = 0, wz = 0;
+      if (keys.has("w")) vx += LINEAR;
+      if (keys.has("s")) vx -= LINEAR;
+      if (keys.has("a")) wz += ANGULAR;             // +wz = 左旋回 (REP-103)
+      if (keys.has("d")) wz -= ANGULAR;
+      return { vx, wz };
+    }
+
+    // 3) WebSocket: 接続 + 自動再接続
+    let ws = null;
+    const setStatus = t => status.textContent = t;
+    function connect() {
+      ws = new WebSocket(`ws://${PI}:${WS_PORT}`);
+      ws.onopen  = () => setStatus(`WS: connected (${PI}:${WS_PORT})`);
+      ws.onclose = () => { setStatus("WS: closed — retrying…"); setTimeout(connect, 1000); };
+      ws.onerror = () => ws.close();
+    }
+    connect();
+
+    // 4) 一定レートで「今の目標速度」を送り続ける（ハートビート）
+    setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(currentAxes()));
+      }
+    }, 1000 / RATE_HZ);
+
+    // 5) 離脱時に明示停止（サーバ側も切断で止まる）
+    addEventListener("beforeunload", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ vx: 0, wz: 0 }));
+    });
+  </script>
+</body>
+</html>

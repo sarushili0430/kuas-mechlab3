@@ -244,9 +244,9 @@ ML3 4輪スキッドステアを動かす `kuas_mechlab3.drive` サブパッケ�
 colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 
-# 端末A: ドライバ（launch 経由）
+# ターミナルA: ドライバ（launch 経由）
 ros2 launch kuas_mechlab3 drivetrain_launch.py
-# 端末B: teleop（tty が要るので別端末で）
+# ターミナルB: teleop（tty が要るので別ターミナルで）
 ros2 run kuas_mechlab3 teleop_keyboard
 ```
 
@@ -295,12 +295,12 @@ source install/setup.bash
 
 ### 3. 起動と方向確認（車輪を浮かせて）
 
-端末を 2 つ使う（driver 起動中はシリアルを占有するため、素のシリアルツールとは併用不可）。
+ターミナルを 2 つ使う（driver 起動中はシリアルを占有するため、素のシリアルツールとは併用不可）。
 
 ```bash
-# 端末A: ドライバ
+# ターミナルA: ドライバ
 ros2 launch kuas_mechlab3 drivetrain_launch.py
-# 端末B: teleop（tty が要るので別端末）
+# ターミナルB: teleop（tty が要るので別ターミナル）
 ros2 run kuas_mechlab3 teleop_keyboard
 ```
 
@@ -318,7 +318,7 @@ ros2 topic echo /mbed_driver/wheel_pwm
 
 ### 4. デモ走行
 
-teleop の端末で**キーを押している間だけ**動く（離すと停止）。
+teleop のターミナルで**キーを押している間だけ**動く（離すと停止）。
 
 | キー | 動作 |
 | --- | --- |
@@ -411,7 +411,7 @@ pytest src/kuas_mechlab3/test/test_frame.py src/kuas_mechlab3/test/test_mjpeg.py
 ```bash
 ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0 rear_device:=/dev/video2
 
-# 別端末で配信レートと中身を確認
+# 別ターミナルで配信レートと中身を確認
 ros2 topic hz /front_camera/image_raw/compressed       # ≈ fps 出ていれば OK
 ros2 topic echo --no-arr /rear_camera/image_raw/compressed   # format=jpeg / data サイズを確認
 ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピックを選んで確認
@@ -450,11 +450,11 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 
-# 端末A: driver
+# ターミナルA: driver
 ros2 launch kuas_mechlab3 drivetrain_launch.py
-# 端末B: WS teleop ブリッジ（tty 不要なので launch 可）
+# ターミナルB: WS teleop ブリッジ（tty 不要なので launch 可）
 ros2 launch kuas_mechlab3 teleop_launch.py
-# 端末C: 手元から操縦（WASD）。別 PC からは --url を Pi の IP に
+# ターミナルC: 手元から操縦（WASD）。別 PC からは --url を Pi の IP に
 ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 ```
 
@@ -493,9 +493,9 @@ pytest src/kuas_mechlab3/test/test_teleop_command.py -v
 
 ```bash
 ros2 launch kuas_mechlab3 teleop_launch.py
-# 別端末で publish を確認
+# 別ターミナルで publish を確認
 ros2 topic echo /cmd_vel
-# さらに別端末から送信（同梱クライアント、または依存ゼロの websocat）
+# さらに別ターミナルから送信（同梱クライアント、または依存ゼロの websocat）
 ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 #   echo '{"vx":0.5,"wz":0.0}' | websocat ws://localhost:9001
 ```
@@ -503,6 +503,73 @@ ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 送信中だけ Twist が出て、送信停止／切断後に `hold_timeout` 内でゼロへ戻れば OK。
 
 > **代替**: ブラウザから直接やるなら標準の [`rosbridge_suite`](https://github.com/RobotWebTools/rosbridge_suite)（`sudo apt install ros-humble-rosbridge-suite`）でも、roslibjs から `cmd_vel` を直接 publish でき、全トピック（テレメトリ含む）にアクセスできる。`teleop_server` は依存を増やさず teleop 専用に絞った自前版。
+
+### 実機リモート操縦の手順書（ラズパイ側 / PC 側）
+
+役割分担はシンプル: **ラズパイ＝ロボット本体。ここで ROS を動かす**。**PC＝操縦者。ブラウザだけ。ROS は要らない**。**必ず車輪を浮かせて**から始めること。
+
+前提（初回だけ。詳細は上の「ラズパイ実機での bring-up」と同じ）: 配線・ファーム書き込み済み、`/dev/ttyACM0` が見える、前後カメラを USB 接続済み、ラズパイにこのリポジトリを clone 済み、シリアル権限 `sudo usermod -aG dialout $USER`（実行後に再ログイン）。
+
+#### A. ラズパイ側でやること
+
+ラズパイで**ターミナルを 3 つ**開く（`tmux` のペイン分割でも可）。**3 つすべての先頭で**まず次を実行する（`ROS_DOMAIN_ID` を 3 ターミナルで同じ値にするのが肝心。違うとノード同士が見えない）:
+
+```bash
+cd ~/kuas-mechlab3
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=11                       # 3 ターミナルとも同じ値にする
+# 初回だけビルド（2 回目以降は不要）:
+# colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+```
+
+そのうえで、ターミナルごとに 1 つずつ起動する:
+
+```bash
+# ターミナル1: モーター driver（/dev/ttyACM0 を使う）
+ros2 launch kuas_mechlab3 drivetrain_launch.py
+
+# ターミナル2: 前後カメラ + 映像配信（device は実機に合わせる。ls /dev/video* で確認）
+ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0 rear_device:=/dev/video2
+
+# ターミナル3: WebSocket teleop ブリッジ
+ros2 launch kuas_mechlab3 teleop_launch.py
+```
+
+最後に**ラズパイの IP を調べてメモ**する（PC 側で使う）:
+
+```bash
+hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
+```
+
+これでラズパイ側は完了。**カメラ＝ポート 8080 / 操縦＝ポート 9001** で待ち受けている状態。
+
+#### B. PC 側でやること（操縦者・ROS 不要）
+
+ラズパイと**同じ Wi-Fi / LAN** に繋いだ PC で、ブラウザだけで完結する。
+
+1. リポジトリの **[`docs/cockpit.html`](./docs/cockpit.html) を PC にコピー**する（GitHub から保存、または `scp <pi-user>@<pi-ip>:~/kuas-mechlab3/docs/cockpit.html .`）。
+2. テキストエディタで開き、先頭付近の行
+   ```js
+   const PI = location.hostname || "192.168.1.42";
+   ```
+   の **`"192.168.1.42"` をラズパイの IP に書き換えて保存**する。
+3. その `cockpit.html` を**ダブルクリックして開く**（ブラウザで `file://…`）。
+4. ページを一度クリックしてフォーカスを当て、**W=前進 / S=後退 / A=左旋回 / D=右旋回**。前後カメラが映り、画面上部に `WS: connected` と出れば接続成功。
+
+> 映像だけ確認したいときは、PC のブラウザで **`http://<ラズパイのIP>:8080/`** を開くだけでもよい。
+
+#### 動いたかの確認 / うまくいかないとき
+
+- ラズパイのターミナル1（driver）に指令ログが出る。別ターミナル（要 `source` + 同じ `ROS_DOMAIN_ID`）で `ros2 topic echo /mbed_driver/wheel_pwm` を見ると値が変わるのも確認できる。
+- **キーを離す / タブを閉じる / Wi-Fi が切れる → 0.4 秒以内に停止**する（設計どおりの安全動作）。
+- 旋回が逆 → クライアントではなく driver の `turn_sign` で直す（上の「主要パラメータ」/「bring-up」参照）。
+- 画面が `WS: closed` のまま → IP とポート 9001、PC とラズパイが同じ LAN か、ファイアウォール（必要なら `sudo ufw allow 8080/tcp` と `sudo ufw allow 9001/tcp`）を確認。
+- 映像が出ない → device パス（`ls /dev/video*`）と `http://<ip>:8080/` の直開きで切り分け。詳細は [docs/teleop-client.md](./docs/teleop-client.md)。
+
+#### 終了
+
+各ターミナルで `Ctrl+C`（teleop は終了時に自動で停止指令を送る）。
 
 ---
 
@@ -536,7 +603,7 @@ ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
 │       └── setup.cfg
-├── docs/                     # 補足ドキュメント（teleop クライアント統合）
+├── docs/                     # 補足ドキュメント（teleop-client.md / 操縦 UI の cockpit.html）
 ├── .python-version           # Python のバージョン固定（3.10.18）
 ├── pyproject.toml            # black / mypy / pytest / coverage / commitizen 設定
 ├── requirements.txt          # 純 Python のランタイム依存
