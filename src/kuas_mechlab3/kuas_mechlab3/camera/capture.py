@@ -32,19 +32,25 @@ class CameraCapture:
         self._cap: cv2.VideoCapture | None = None
 
     def open(self) -> None:
-        """Open the device and request the configured format (raises on failure).
+        """Open the device on the V4L2 backend and request the configured format.
 
-        The FOURCC must be set before width/height: at VGA+ a Logicool cam only
-        reaches 30 fps over USB with MJPG, and the driver picks the resolution
-        for the *current* codec, so the order matters.
+        The backend is pinned to V4L2 on purpose: handing a "/dev/video*" path to
+        the default cv2.VideoCapture lets OpenCV pick the FFMPEG backend, which
+        treats the device as a stream and blocks for *minutes* on an interrupt
+        timeout before it opens. V4L2 opens a USB webcam immediately, by index or
+        by path. The FOURCC must be set before width/height: at VGA+ a Logicool
+        cam only reaches 30 fps over USB with MJPG, and the driver picks the
+        resolution for the *current* codec, so the order matters.
         """
-        cap = cv2.VideoCapture(self._device)
+        cap = cv2.VideoCapture(self._device, cv2.CAP_V4L2)
         if not cap.isOpened():
             raise RuntimeError(f"cannot open camera device: {self._device!r}")
         cap.set(cv2.CAP_PROP_FOURCC, fourcc(self._codec))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         cap.set(cv2.CAP_PROP_FPS, self._fps)
+        # Keep only the newest frame so teleop sees live video, not a backlog.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._cap = cap
 
     def close(self) -> None:
