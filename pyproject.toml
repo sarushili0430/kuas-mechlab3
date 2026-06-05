@@ -36,6 +36,12 @@ ignore_missing_imports = true
 module = ["serial.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# OpenCV (python3-opencv) and numpy come from apt/rosdep on the robot, not the
+# standalone lint env, so let mypy treat them as untyped (same as pyserial above).
+module = ["cv2.*", "numpy.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 pythonpath = ["src/kuas_mechlab3"]
 testpaths = ["src/kuas_mechlab3/test"]
@@ -55,6 +61,9 @@ omit = [
     "*/drive/serial_link.py",
     "*/drive/mbed_driver.py",
     "*/drive/teleop_keyboard.py",
+    "*/camera/capture.py",
+    "*/camera/camera_node.py",
+    "*/camera/mjpeg_server.py",
 ]
 
 [tool.coverage.report]

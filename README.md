@@ -333,6 +333,93 @@ teleop の端末で**キーを押している間だけ**動く（離すと停止
 
 ---
 
+## 前後カメラ (camera)
+
+ロボットの**前後に USB Web カメラ（Logicool 等）**を付け、映像を ROS2 トピックに publish し、teleop 操縦者がブラウザで見られるよう HTTP（MJPEG）で配信する `kuas_mechlab3.camera` サブパッケージ。`camera_node` を前後で 2 つ起動して `sensor_msgs/Image` を流し、`mjpeg_server` がそれを**購読**して `http://<pi>:8080/` で配信する。
+
+```
+[front_camera] ──~/image_raw(Image)──┐
+[rear_camera]  ──~/image_raw(Image)──┴─> [mjpeg_server] ──HTTP MJPEG──> ブラウザ（操縦者）
+                                              （/front_camera/image_raw, /rear_camera/image_raw を購読）
+```
+
+責任分離（リポジトリ方針どおり、純ロジックは pytest / cv2・ROS・I-O は colcon でテスト）:
+
+| モジュール | 責任 | テスト |
+| --- | --- | --- |
+| `frame.py` | FOURCC 生成 / Image フィールド算出 / デバイス解決（純） | pytest |
+| `mjpeg.py` | MJPEG over HTTP のフレーミング（純・バイト列のみ） | pytest |
+| `capture.py` | cv2 デバイス I/O（`frame` に委譲） | colcon |
+| `camera_node.py` | ROSノード: webcam → `~/image_raw` を publish | colcon |
+| `mjpeg_server.py` | ROSノード: Image を購読し HTTP/MJPEG で配信 | colcon |
+
+> カメラのデバイス番号（`/dev/video0` など）は**挿し直しや再起動で前後が入れ替わる**ことがある。確実に固定したいときは `ls -l /dev/v4l/by-id/` で出る安定したシンボリックリンク（例 `/dev/v4l/by-id/usb-...-video-index0`）を `front_device:=` / `rear_device:=` に渡す。
+
+### 実行（ROS2 Humble 上）
+
+```bash
+colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+
+# 前後カメラ + HTTP 配信をまとめて起動（device はロボットに合わせて上書き）
+ros2 launch kuas_mechlab3 cameras_launch.py \
+    front_device:=/dev/video0 rear_device:=/dev/video2
+```
+
+操縦者の PC のブラウザで **`http://<ラズパイのIP>:8080/`** を開くと前後の映像が並んで表示される。ドライブトレイン（`drivetrain_launch.py` + `teleop_keyboard`）と併用すれば、映像を見ながらの teleop ができる。
+
+> 単体のカメラだけ動かしたいときは `ros2 run kuas_mechlab3 camera_node --ros-args -r __node:=front_camera -p device:=/dev/video0` のようにノード単体でも起動できる（トピックは `/front_camera/image_raw`）。
+
+### 主要パラメータ
+
+`camera_node`:
+
+| 名前 | 既定 | 説明 |
+| --- | --- | --- |
+| `device` | `0` | デバイス番号（`0`）または安定パス（`/dev/v4l/by-id/...`） |
+| `width` / `height` | `640` / `480` | 解像度 [px] |
+| `fps` | `30.0` | フレームレート（publish 周期もこれに従う） |
+| `codec` | `MJPG` | USB 帯域節約用の FOURCC。VGA+ で 30fps を出すなら MJPG |
+| `frame_id` | `camera` | Image ヘッダの座標フレーム（launch では front/rear を設定） |
+
+`mjpeg_server`:
+
+| 名前 | 既定 | 説明 |
+| --- | --- | --- |
+| `topics` | `[/front_camera/image_raw, /rear_camera/image_raw]` | 購読する画像トピック |
+| `host` / `port` | `0.0.0.0` / `8080` | HTTP の待ち受け |
+| `jpeg_quality` | `80` | 配信 JPEG の品質（1–100、帯域とのトレードオフ） |
+| `stream_fps` | `15.0` | 配信側のフレームレート上限（ネットワーク負荷の調整） |
+
+> **代替**: 標準の [`web_video_server`](https://github.com/RobotWebTools/web_video_server)（`sudo apt install ros-humble-web-video-server`）でも同じ `image_raw` トピックを HTTP/MJPEG 配信できる。`mjpeg_server` は依存を増やさず前後を 1 ページにまとめた自前版。
+
+### テスト手順
+
+**1. 純ロジック（ROS 不要・PC で即実行）**
+
+`frame.py`（FOURCC / stride）と `mjpeg.py`（multipart 整形）は純 Python なので pytest で確認できる。
+
+```bash
+pytest src/kuas_mechlab3/test/test_frame.py src/kuas_mechlab3/test/test_mjpeg.py -v
+```
+
+**2. publish の確認（ROS2 Humble・実機）** — カメラを挿してビルド後:
+
+```bash
+ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0 rear_device:=/dev/video2
+
+# 別端末で配信レートと中身を確認
+ros2 topic hz /front_camera/image_raw      # ≈ fps 出ていれば OK
+ros2 topic echo --no-arr /rear_camera/image_raw   # width/height/encoding を確認
+ros2 run rqt_image_view rqt_image_view     # GUI があれば映像を直接確認
+```
+
+**3. HTTP 配信（teleop 視点）の確認**
+
+操縦者 PC のブラウザで `http://<ラズパイのIP>:8080/` を開き、前後の映像が更新されることを確認する。`curl -s http://<ip>:8080/ | grep stream` で index ページのストリーム URL も確認できる。映像が出ない場合は ① カメラの device パス、② `ros2 topic hz` でトピックが流れているか、③ ファイアウォール/ポート 8080 を順に切り分ける。
+
+---
+
 ## ディレクトリ構成
 
 ```
@@ -343,13 +430,19 @@ teleop の端末で**キーを押している間だけ**動く（離すと停止
 │       ├── kuas_mechlab3/    # パッケージ本体（Python ソース）
 │       │   ├── __init__.py
 │       │   ├── utils.py      # 純 Python のヘルパー（例: clamp）
-│       │   └── drive/        # ML3 ドライブトレイン（下記「ドライブトレイン」参照）
-│       │       ├── kinematics.py      # 純: Twist→4輪ミキシング
-│       │       ├── protocol.py        # 純: ワイヤ形式 / テレメトリ解析
-│       │       ├── serial_link.py     # シリアル I/O（pyserial）
-│       │       ├── mbed_driver.py     # ROSノード: cmd_vel→mbed
-│       │       └── teleop_keyboard.py # ROSノード: キー→cmd_vel
-│       ├── launch/           # ros2 launch ファイル
+│       │   ├── drive/        # ML3 ドライブトレイン（下記「ドライブトレイン」参照）
+│       │   │   ├── kinematics.py      # 純: Twist→4輪ミキシング
+│       │   │   ├── protocol.py        # 純: ワイヤ形式 / テレメトリ解析
+│       │   │   ├── serial_link.py     # シリアル I/O（pyserial）
+│       │   │   ├── mbed_driver.py     # ROSノード: cmd_vel→mbed
+│       │   │   └── teleop_keyboard.py # ROSノード: キー→cmd_vel
+│       │   └── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
+│       │       ├── frame.py           # 純: FOURCC / Image フィールド / デバイス解決
+│       │       ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
+│       │       ├── capture.py         # cv2 デバイス I/O
+│       │       ├── camera_node.py     # ROSノード: webcam→image_raw
+│       │       └── mjpeg_server.py    # ROSノード: image 購読→HTTP 配信
+│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
