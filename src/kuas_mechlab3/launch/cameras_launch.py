@@ -36,7 +36,7 @@ def generate_launch_description() -> LaunchDescription:
                         "frame_id": "front_camera",
                         "width": 640,
                         "height": 480,
-                        "fps": 30.0,
+                        "fps": 15.0,
                     }
                 ],
             ),
@@ -51,7 +51,7 @@ def generate_launch_description() -> LaunchDescription:
                         "frame_id": "rear_camera",
                         "width": 640,
                         "height": 480,
-                        "fps": 30.0,
+                        "fps": 15.0,
                     }
                 ],
             ),
