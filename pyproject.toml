@@ -42,6 +42,13 @@ ignore_missing_imports = true
 module = ["cv2.*", "numpy.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# websockets (python3-websockets) is an apt/rosdep runtime dep for the teleop
+# WebSocket bridge; the standalone lint job does not install it, so let mypy
+# treat it as untyped (same rationale as pyserial / cv2 above).
+module = ["websockets.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 pythonpath = ["src/kuas_mechlab3"]
 testpaths = ["src/kuas_mechlab3/test"]
@@ -61,6 +68,8 @@ omit = [
     "*/drive/serial_link.py",
     "*/drive/mbed_driver.py",
     "*/drive/teleop_keyboard.py",
+    "*/drive/teleop_server.py",
+    "*/drive/teleop_ws_client.py",
     "*/camera/capture.py",
     "*/camera/camera_node.py",
     "*/camera/mjpeg_server.py",

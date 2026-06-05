@@ -27,6 +27,8 @@ setup(
         "console_scripts": [
             "mbed_driver = kuas_mechlab3.drive.mbed_driver:main",
             "teleop_keyboard = kuas_mechlab3.drive.teleop_keyboard:main",
+            "teleop_server = kuas_mechlab3.drive.teleop_server:main",
+            "teleop_ws_client = kuas_mechlab3.drive.teleop_ws_client:main",
             "camera_node = kuas_mechlab3.camera.camera_node:main",
             "mjpeg_server = kuas_mechlab3.camera.mjpeg_server:main",
         ],
