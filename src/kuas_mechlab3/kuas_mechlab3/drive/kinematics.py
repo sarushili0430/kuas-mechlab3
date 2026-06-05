@@ -16,7 +16,7 @@ def twist_to_setpoints(
     wheel_setpoint: float,
     turn_sign: float = 1.0,
 ) -> tuple[float, float, float, float]:
-    """Mix a Twist into four wheel setpoints (s1=FL, s2=BL, s3=BR, s4=FR).
+    """Mix a Twist into four wheel setpoints (s1=FL, s2=BL, s3=FR, s4=BR).
 
     vx / wz are normalised against max_linear / max_angular, combined as a
     differential-drive pair (left = lin - ang, right = lin + ang), then scaled
@@ -39,5 +39,5 @@ def twist_to_setpoints(
 
     s_left = left * wheel_setpoint
     s_right = right * wheel_setpoint
-    # s1 FL and s2 BL share the left side; s3 BR and s4 FR share the right side.
+    # s1 FL and s2 BL share the left side; s3 FR and s4 BR share the right side.
     return (s_left, s_left, s_right, s_right)

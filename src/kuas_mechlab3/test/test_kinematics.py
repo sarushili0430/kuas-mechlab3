@@ -63,7 +63,7 @@ def test_zero_twist_is_full_stop() -> None:
 def test_left_and_right_wheels_are_paired() -> None:
     s1, s2, s3, s4 = _mix(0.3, 0.5)
     assert s1 == s2  # FL == BL (left side)
-    assert s3 == s4  # BR == FR (right side)
+    assert s3 == s4  # FR == BR (right side)
 
 
 def test_zero_max_linear_avoids_division_by_zero() -> None:
