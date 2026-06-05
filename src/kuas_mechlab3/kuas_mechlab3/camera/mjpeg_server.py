@@ -11,6 +11,8 @@ plus the threaded HTTP server. For a batteries-included alternative, the ROS
 ``web_video_server`` package serves the same topics without this node.
 """
 
+import select
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
@@ -85,12 +87,32 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             period = 1.0 / server.stream_fps
             while not server.stop.is_set() and rclpy.ok():
+                if self._client_gone():
+                    break
                 jpeg = server.store.get(topic)
                 if jpeg is not None:
                     self.wfile.write(mjpeg.mjpeg_part(jpeg))
                 server.stop.wait(period)
         except (BrokenPipeError, ConnectionResetError):
             pass  # client closed the stream; nothing to clean up
+
+    def _client_gone(self) -> bool:
+        """True once the client has closed the socket.
+
+        A topic that never produces a frame never triggers a write, so a
+        BrokenPipeError is never raised on disconnect and the streaming loop
+        would otherwise spin forever after the browser has gone -- one leaked
+        thread (and socket) per stalled stream. Peeking the socket lets a
+        frameless stream end cleanly too.
+        """
+        sock = self.request
+        try:
+            readable, _, _ = select.select([sock], [], [], 0)
+            if not readable:
+                return False
+            return bool(sock.recv(1, socket.MSG_PEEK) == b"")
+        except OSError:
+            return True
 
 
 class _StreamServer(ThreadingHTTPServer):
