@@ -423,6 +423,89 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 ---
 
+## リモート teleop (WebSocket)
+
+操縦者の PC（ブラウザや手元のクライアント）から **WebSocket で `cmd_vel` を送る**ための `kuas_mechlab3.drive` の teleop ブリッジ。`teleop_server` が WS で正規化済みのドライブ指令 `{"vx", "wz"}`（各軸 -1..1）を受け取り、`teleop_keyboard` と同じく一定レートで `geometry_msgs/Twist` を `cmd_vel` に publish する。`cmd_vel` は標準インターフェースなので **`mbed_driver` / `kinematics` / ウォッチドッグには一切手を入れない**（`teleop_keyboard` をネットワーク越しにしただけ）。
+
+```
+[ブラウザ / teleop_ws_client] ──WS {"vx","wz"}(-1..1)──> [teleop_server] ──cmd_vel(Twist)──> [mbed_driver] ──serial──> [mbed]
+        （操縦者PC）                                      （一定レートで republish、切断/無入力で 0）
+```
+
+責任分離（リポジトリ方針どおり、純ロジックは pytest / ROS・I-O は colcon でテスト）:
+
+| モジュール | 責任 | テスト |
+| --- | --- | --- |
+| `teleop_command.py` | 純: JSON 指令の解析（不正は None）/ 正規化→物理量スケール（`utils.clamp` を再利用） | pytest |
+| `teleop_server.py` | ROSノード: WS サーバ（背景 asyncio スレッド）+ 一定レートで `cmd_vel` を publish | colcon |
+| `teleop_ws_client.py` | 操縦者 PC 用の簡易 WS クライアント（WASD→WS、rclpy 非依存） | 手動 |
+
+**安全（三層・既存に上乗せ）**: ① WS 切断で次サイクルに即ゼロ（最速）② `hold_timeout`（既定 0.4s）で無入力なら減衰してゼロ ③ `mbed_driver` の `cmd_timeout` ウォッチドッグ（最終網・無変更）。WS 組み込みの ping/pong（`ping_interval`/`ping_timeout`）で、停止したクライアントの切断も検知する。
+
+> 📄 **ブラウザ等から繋ぐ手順**（WS の接続方法と、カメラ映像を `<img>` で受け取る方法、最小コックピット HTML 例）は [`docs/teleop-client.md`](./docs/teleop-client.md) にまとめている。
+
+### 実行（ROS2 Humble 上）
+
+```bash
+colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+
+# 端末A: driver
+ros2 launch kuas_mechlab3 drivetrain_launch.py
+# 端末B: WS teleop ブリッジ（tty 不要なので launch 可）
+ros2 launch kuas_mechlab3 teleop_launch.py
+# 端末C: 手元から操縦（WASD）。別 PC からは --url を Pi の IP に
+ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
+```
+
+カメラ（`cameras_launch.py`）も併用すれば、ブラウザで映像（`http://<ラズパイのIP>:8080/`）を見ながら WS で操縦できる。
+
+### ワイヤ形式
+
+1 メッセージ = JSON テキスト 1 個。`vx`/`wz` は **正規化済みの軸値 [-1, 1]**（`teleop_server` が `max_linear`/`max_angular` で物理量へスケール）。
+
+```json
+{"vx": 0.5, "wz": -0.3}
+```
+
+### 主要パラメータ（teleop_server）
+
+| 名前 | 既定 | 説明 |
+| --- | --- | --- |
+| `host` / `port` | `0.0.0.0` / `9001` | WS の待ち受け（カメラの 8080 とは別ポート） |
+| `publish_rate` | `20.0` | `cmd_vel` の publish レート [Hz] |
+| `hold_timeout` | `0.4` | 無入力で 0 に落とすまで [s]（`teleop_keyboard` と同値） |
+| `max_linear` / `max_angular` | `0.5` / `2.0` | 正規化 1.0 に割り当てる vx[m/s] / wz[rad/s]（`mbed_driver` と揃える） |
+| `deadzone` | `0.05` | 軸のデッドゾーン（スティックのドリフト除去） |
+| `ping_interval` / `ping_timeout` | `5.0` / `5.0` | WS keepalive [s]（無応答クライアントの切断検知） |
+
+### テスト手順
+
+**1. 純ロジック（ROS 不要・PC で即実行）**
+
+`teleop_command.py`（JSON 解析 / スケール）は純 Python なので pytest で確認できる。
+
+```bash
+pytest src/kuas_mechlab3/test/test_teleop_command.py -v
+```
+
+**2. WS → cmd_vel の確認（ROS2 Humble・車輪を浮かせて）**
+
+```bash
+ros2 launch kuas_mechlab3 teleop_launch.py
+# 別端末で publish を確認
+ros2 topic echo /cmd_vel
+# さらに別端末から送信（同梱クライアント、または依存ゼロの websocat）
+ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
+#   echo '{"vx":0.5,"wz":0.0}' | websocat ws://localhost:9001
+```
+
+送信中だけ Twist が出て、送信停止／切断後に `hold_timeout` 内でゼロへ戻れば OK。
+
+> **代替**: ブラウザから直接やるなら標準の [`rosbridge_suite`](https://github.com/RobotWebTools/rosbridge_suite)（`sudo apt install ros-humble-rosbridge-suite`）でも、roslibjs から `cmd_vel` を直接 publish でき、全トピック（テレメトリ含む）にアクセスできる。`teleop_server` は依存を増やさず teleop 専用に絞った自前版。
+
+---
+
 ## ディレクトリ構成
 
 ```
@@ -434,22 +517,26 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 │       │   ├── __init__.py
 │       │   ├── utils.py      # 純 Python のヘルパー（例: clamp）
 │       │   ├── drive/        # ML3 ドライブトレイン（下記「ドライブトレイン」参照）
-│       │   │   ├── kinematics.py      # 純: Twist→4輪ミキシング
-│       │   │   ├── protocol.py        # 純: ワイヤ形式 / テレメトリ解析
-│       │   │   ├── serial_link.py     # シリアル I/O（pyserial）
-│       │   │   ├── mbed_driver.py     # ROSノード: cmd_vel→mbed
-│       │   │   └── teleop_keyboard.py # ROSノード: キー→cmd_vel
+│       │   │   ├── kinematics.py       # 純: Twist→4輪ミキシング
+│       │   │   ├── protocol.py         # 純: ワイヤ形式 / テレメトリ解析
+│       │   │   ├── teleop_command.py   # 純: WS 指令の解析 / スケール
+│       │   │   ├── serial_link.py      # シリアル I/O（pyserial）
+│       │   │   ├── mbed_driver.py      # ROSノード: cmd_vel→mbed
+│       │   │   ├── teleop_keyboard.py  # ROSノード: キー→cmd_vel
+│       │   │   ├── teleop_server.py    # ROSノード: WS→cmd_vel
+│       │   │   └── teleop_ws_client.py # 操縦者PC用の簡易 WS クライアント
 │       │   └── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
 │       │       ├── frame.py           # 純: FOURCC / デバイス解決
 │       │       ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
 │       │       ├── capture.py         # cv2 デバイス I/O
 │       │       ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
 │       │       └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
-│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras）
+│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
 │       └── setup.cfg
+├── docs/                     # 補足ドキュメント（teleop クライアント統合）
 ├── .python-version           # Python のバージョン固定（3.10.18）
 ├── pyproject.toml            # black / mypy / pytest / coverage / commitizen 設定
 ├── requirements.txt          # 純 Python のランタイム依存
