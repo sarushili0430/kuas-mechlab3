@@ -244,9 +244,9 @@ ML3 4輪スキッドステアを動かす `kuas_mechlab3.drive` サブパッケ�
 colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 
-# 端末A: ドライバ（launch 経由）
+# ターミナルA: ドライバ（launch 経由）
 ros2 launch kuas_mechlab3 drivetrain_launch.py
-# 端末B: teleop（tty が要るので別端末で）
+# ターミナルB: teleop（tty が要るので別ターミナルで）
 ros2 run kuas_mechlab3 teleop_keyboard
 ```
 
@@ -295,12 +295,12 @@ source install/setup.bash
 
 ### 3. 起動と方向確認（車輪を浮かせて）
 
-端末を 2 つ使う（driver 起動中はシリアルを占有するため、素のシリアルツールとは併用不可）。
+ターミナルを 2 つ使う（driver 起動中はシリアルを占有するため、素のシリアルツールとは併用不可）。
 
 ```bash
-# 端末A: ドライバ
+# ターミナルA: ドライバ
 ros2 launch kuas_mechlab3 drivetrain_launch.py
-# 端末B: teleop（tty が要るので別端末）
+# ターミナルB: teleop（tty が要るので別ターミナル）
 ros2 run kuas_mechlab3 teleop_keyboard
 ```
 
@@ -318,7 +318,7 @@ ros2 topic echo /mbed_driver/wheel_pwm
 
 ### 4. デモ走行
 
-teleop の端末で**キーを押している間だけ**動く（離すと停止）。
+teleop のターミナルで**キーを押している間だけ**動く（離すと停止）。
 
 | キー | 動作 |
 | --- | --- |
@@ -411,7 +411,7 @@ pytest src/kuas_mechlab3/test/test_frame.py src/kuas_mechlab3/test/test_mjpeg.py
 ```bash
 ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0 rear_device:=/dev/video2
 
-# 別端末で配信レートと中身を確認
+# 別ターミナルで配信レートと中身を確認
 ros2 topic hz /front_camera/image_raw/compressed       # ≈ fps 出ていれば OK
 ros2 topic echo --no-arr /rear_camera/image_raw/compressed   # format=jpeg / data サイズを確認
 ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピックを選んで確認
@@ -450,11 +450,11 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 
-# 端末A: driver
+# ターミナルA: driver
 ros2 launch kuas_mechlab3 drivetrain_launch.py
-# 端末B: WS teleop ブリッジ（tty 不要なので launch 可）
+# ターミナルB: WS teleop ブリッジ（tty 不要なので launch 可）
 ros2 launch kuas_mechlab3 teleop_launch.py
-# 端末C: 手元から操縦（WASD）。別 PC からは --url を Pi の IP に
+# ターミナルC: 手元から操縦（WASD）。別 PC からは --url を Pi の IP に
 ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 ```
 
@@ -493,9 +493,9 @@ pytest src/kuas_mechlab3/test/test_teleop_command.py -v
 
 ```bash
 ros2 launch kuas_mechlab3 teleop_launch.py
-# 別端末で publish を確認
+# 別ターミナルで publish を確認
 ros2 topic echo /cmd_vel
-# さらに別端末から送信（同梱クライアント、または依存ゼロの websocat）
+# さらに別ターミナルから送信（同梱クライアント、または依存ゼロの websocat）
 ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 #   echo '{"vx":0.5,"wz":0.0}' | websocat ws://localhost:9001
 ```
@@ -512,27 +512,27 @@ ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 
 #### A. ラズパイ側でやること
 
-ラズパイで**端末を 3 つ**開く（`tmux` のペイン分割でも可）。**3 つすべての先頭で**まず次を実行する（`ROS_DOMAIN_ID` を 3 端末で同じ値にするのが肝心。違うとノード同士が見えない）:
+ラズパイで**ターミナルを 3 つ**開く（`tmux` のペイン分割でも可）。**3 つすべての先頭で**まず次を実行する（`ROS_DOMAIN_ID` を 3 ターミナルで同じ値にするのが肝心。違うとノード同士が見えない）:
 
 ```bash
 cd ~/kuas-mechlab3
 source /opt/ros/humble/setup.bash
-export ROS_DOMAIN_ID=11                       # 3 端末とも同じ値にする
+export ROS_DOMAIN_ID=11                       # 3 ターミナルとも同じ値にする
 # 初回だけビルド（2 回目以降は不要）:
 # colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 ```
 
-そのうえで、端末ごとに 1 つずつ起動する:
+そのうえで、ターミナルごとに 1 つずつ起動する:
 
 ```bash
-# 端末1: モーター driver（/dev/ttyACM0 を使う）
+# ターミナル1: モーター driver（/dev/ttyACM0 を使う）
 ros2 launch kuas_mechlab3 drivetrain_launch.py
 
-# 端末2: 前後カメラ + 映像配信（device は実機に合わせる。ls /dev/video* で確認）
+# ターミナル2: 前後カメラ + 映像配信（device は実機に合わせる。ls /dev/video* で確認）
 ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0 rear_device:=/dev/video2
 
-# 端末3: WebSocket teleop ブリッジ
+# ターミナル3: WebSocket teleop ブリッジ
 ros2 launch kuas_mechlab3 teleop_launch.py
 ```
 
@@ -561,7 +561,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 
 #### 動いたかの確認 / うまくいかないとき
 
-- ラズパイの端末1（driver）に指令ログが出る。別端末（要 `source` + 同じ `ROS_DOMAIN_ID`）で `ros2 topic echo /mbed_driver/wheel_pwm` を見ると値が変わるのも確認できる。
+- ラズパイのターミナル1（driver）に指令ログが出る。別ターミナル（要 `source` + 同じ `ROS_DOMAIN_ID`）で `ros2 topic echo /mbed_driver/wheel_pwm` を見ると値が変わるのも確認できる。
 - **キーを離す / タブを閉じる / Wi-Fi が切れる → 0.4 秒以内に停止**する（設計どおりの安全動作）。
 - 旋回が逆 → クライアントではなく driver の `turn_sign` で直す（上の「主要パラメータ」/「bring-up」参照）。
 - 画面が `WS: closed` のまま → IP とポート 9001、PC とラズパイが同じ LAN か、ファイアウォール（必要なら `sudo ufw allow 8080/tcp` と `sudo ufw allow 9001/tcp`）を確認。
@@ -569,7 +569,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 
 #### 終了
 
-各端末で `Ctrl+C`（teleop は終了時に自動で停止指令を送る）。
+各ターミナルで `Ctrl+C`（teleop は終了時に自動で停止指令を送る）。
 
 ---
 
