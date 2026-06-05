@@ -1,39 +1,41 @@
-"""ROS2 camera node: one USB webcam -> sensor_msgs/Image on ~/image_raw.
+"""ROS2 camera node: one USB webcam -> sensor_msgs/CompressedImage (JPEG).
 
 Run once per camera (front and rear) with a different node name and device, so
-the topics resolve to /front_camera/image_raw and /rear_camera/image_raw. The
-cv2 device I/O is delegated to ``CameraCapture`` and the per-message field math
-to ``frame``, so this node owns only ROS I/O, the capture timer, and teardown.
+the topics resolve to /front_camera/image_raw/compressed and
+/rear_camera/image_raw/compressed. The cv2 device I/O is delegated to
+``CameraCapture``; this node JPEG-encodes each frame at the source so only small
+compressed frames cross DDS (cheap on a Raspberry Pi), and owns ROS I/O, the
+capture timer, and clean teardown.
 """
 
 from typing import Any
 
+import cv2
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 
 from kuas_mechlab3.camera.capture import CameraCapture
-from kuas_mechlab3.camera.frame import image_fields
 
 
 class CameraNode(Node):  # type: ignore[misc]
-    """Publish frames from a single USB webcam as sensor_msgs/Image."""
+    """Publish JPEG frames from a single USB webcam as CompressedImage."""
 
     def __init__(self) -> None:
         """Declare parameters, open the camera, start the capture timer."""
         super().__init__("camera")
 
         self.declare_parameter("device", "0")
-        self.declare_parameter("width", 640)
-        self.declare_parameter("height", 480)
+        self.declare_parameter("width", 320)
+        self.declare_parameter("height", 240)
         self.declare_parameter("fps", 30.0)
         self.declare_parameter("codec", "MJPG")
         self.declare_parameter("frame_id", "camera")
-        self.declare_parameter("encoding", "bgr8")
+        self.declare_parameter("jpeg_quality", 80)
 
         self._frame_id = str(self.get_parameter("frame_id").value)
-        self._encoding = str(self.get_parameter("encoding").value)
+        self._quality = int(self.get_parameter("jpeg_quality").value)
         self._device = str(self.get_parameter("device").value)
         fps = float(self.get_parameter("fps").value)
 
@@ -46,7 +48,9 @@ class CameraNode(Node):  # type: ignore[misc]
         )
         self._camera.open()
 
-        self._pub = self.create_publisher(Image, "~/image_raw", qos_profile_sensor_data)
+        self._pub = self.create_publisher(
+            CompressedImage, "~/image_raw/compressed", qos_profile_sensor_data
+        )
         self._timer = self.create_timer(1.0 / fps, self._capture)
 
         self.get_logger().info(
@@ -54,27 +58,32 @@ class CameraNode(Node):  # type: ignore[misc]
         )
 
     def _capture(self) -> None:
-        """Grab one frame and publish it; skip (throttled warn) on a bad grab."""
+        """Grab one frame, JPEG-encode it, and publish; skip on a bad grab."""
         frame = self._camera.read()
         if frame is None:
             self.get_logger().warn(
                 "camera grab failed -> skipping frame", throttle_duration_sec=2.0
             )
             return
-        self._pub.publish(self._to_image(frame))
+        msg = self._to_compressed(frame)
+        if msg is not None:
+            self._pub.publish(msg)
 
-    def _to_image(self, frame: Any) -> Image:
-        """Wrap a raw BGR frame in a stamped sensor_msgs/Image message."""
-        fields = image_fields(int(frame.shape[0]), int(frame.shape[1]), self._encoding)
-        msg = Image()
+    def _to_compressed(self, frame: Any) -> CompressedImage | None:
+        """JPEG-encode a raw BGR frame into a stamped CompressedImage, or None."""
+        ok, buf = cv2.imencode(
+            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
+        )
+        if not ok:
+            self.get_logger().warn(
+                "jpeg encode failed -> skipping frame", throttle_duration_sec=2.0
+            )
+            return None
+        msg = CompressedImage()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self._frame_id
-        msg.height = fields["height"]
-        msg.width = fields["width"]
-        msg.encoding = fields["encoding"]
-        msg.is_bigendian = fields["is_bigendian"]
-        msg.step = fields["step"]
-        msg.data = frame.tobytes()
+        msg.format = "jpeg"
+        msg.data = buf.tobytes()
         return msg
 
     def shutdown(self) -> None:

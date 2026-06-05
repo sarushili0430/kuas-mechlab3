@@ -335,23 +335,23 @@ teleop の端末で**キーを押している間だけ**動く（離すと停止
 
 ## 前後カメラ (camera)
 
-ロボットの**前後に USB Web カメラ（Logicool 等）**を付け、映像を ROS2 トピックに publish し、teleop 操縦者がブラウザで見られるよう HTTP（MJPEG）で配信する `kuas_mechlab3.camera` サブパッケージ。`camera_node` を前後で 2 つ起動して `sensor_msgs/Image` を流し、`mjpeg_server` がそれを**購読**して `http://<pi>:8080/` で配信する。
+ロボットの**前後に USB Web カメラ（Logicool 等）**を付け、映像を JPEG 圧縮して ROS2 トピックに publish し、teleop 操縦者がブラウザで見られるよう HTTP（MJPEG）で配信する `kuas_mechlab3.camera` サブパッケージ。`camera_node` を前後で 2 つ起動して **source で JPEG 化した `sensor_msgs/CompressedImage`** を流し、`mjpeg_server` がそれを**購読**して `http://<pi>:8080/` で中継する。ラズパイ負荷を抑えるため、生画像ではなく圧縮済みフレームだけが DDS を流れる。
 
 ```
-[front_camera] ──~/image_raw(Image)──┐
-[rear_camera]  ──~/image_raw(Image)──┴─> [mjpeg_server] ──HTTP MJPEG──> ブラウザ（操縦者）
-                                              （/front_camera/image_raw, /rear_camera/image_raw を購読）
+[front_camera] ──~/image_raw/compressed(CompressedImage,JPEG)──┐
+[rear_camera]  ──~/image_raw/compressed────────────────────────┴─> [mjpeg_server] ──HTTP MJPEG──> ブラウザ（操縦者）
+                                                （JPEG バイトをそのまま中継・再エンコードなし）
 ```
 
 責任分離（リポジトリ方針どおり、純ロジックは pytest / cv2・ROS・I-O は colcon でテスト）:
 
 | モジュール | 責任 | テスト |
 | --- | --- | --- |
-| `frame.py` | FOURCC 生成 / Image フィールド算出 / デバイス解決（純） | pytest |
+| `frame.py` | FOURCC 生成 / デバイス解決（純） | pytest |
 | `mjpeg.py` | MJPEG over HTTP のフレーミング（純・バイト列のみ） | pytest |
 | `capture.py` | cv2 デバイス I/O（`frame` に委譲） | colcon |
-| `camera_node.py` | ROSノード: webcam → `~/image_raw` を publish | colcon |
-| `mjpeg_server.py` | ROSノード: Image を購読し HTTP/MJPEG で配信 | colcon |
+| `camera_node.py` | ROSノード: webcam → JPEG 化 → `~/image_raw/compressed` を publish | colcon |
+| `mjpeg_server.py` | ROSノード: CompressedImage を購読し HTTP/MJPEG で中継 | colcon |
 
 > カメラのデバイス番号（`/dev/video0` など）は**挿し直しや再起動で前後が入れ替わる**ことがある。確実に固定したいときは `ls -l /dev/v4l/by-id/` で出る安定したシンボリックリンク（例 `/dev/v4l/by-id/usb-...-video-index0`）を `front_device:=` / `rear_device:=` に渡す。
 
@@ -362,13 +362,16 @@ colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 
 # 前後カメラ + HTTP 配信をまとめて起動（device はロボットに合わせて上書き）
+# 既定は Pi 向けに 320x240@30fps。解像度/fps は launch 引数で変更できる。
 ros2 launch kuas_mechlab3 cameras_launch.py \
     front_device:=/dev/video0 rear_device:=/dev/video2
+# 例: 画質優先（負荷増）。fps を上げるときは stream_fps も揃える
+ros2 launch kuas_mechlab3 cameras_launch.py width:=640 height:=480 fps:=15.0 stream_fps:=15.0
 ```
 
 操縦者の PC のブラウザで **`http://<ラズパイのIP>:8080/`** を開くと前後の映像が並んで表示される。ドライブトレイン（`drivetrain_launch.py` + `teleop_keyboard`）と併用すれば、映像を見ながらの teleop ができる。
 
-> 単体のカメラだけ動かしたいときは `ros2 run kuas_mechlab3 camera_node --ros-args -r __node:=front_camera -p device:=/dev/video0` のようにノード単体でも起動できる（トピックは `/front_camera/image_raw`）。
+> 単体のカメラだけ動かしたいときは `ros2 run kuas_mechlab3 camera_node --ros-args -r __node:=front_camera -p device:=/dev/video0` のようにノード単体でも起動できる（トピックは `/front_camera/image_raw/compressed`）。
 
 ### 主要パラメータ
 
@@ -377,27 +380,27 @@ ros2 launch kuas_mechlab3 cameras_launch.py \
 | 名前 | 既定 | 説明 |
 | --- | --- | --- |
 | `device` | `0` | デバイス番号（`0`）または安定パス（`/dev/v4l/by-id/...`） |
-| `width` / `height` | `640` / `480` | 解像度 [px] |
+| `width` / `height` | `320` / `240` | 解像度 [px]。Pi 向けの既定。負荷は画素数に比例 |
 | `fps` | `30.0` | フレームレート（publish 周期もこれに従う） |
-| `codec` | `MJPG` | USB 帯域節約用の FOURCC。VGA+ で 30fps を出すなら MJPG |
-| `frame_id` | `camera` | Image ヘッダの座標フレーム（launch では front/rear を設定） |
+| `codec` | `MJPG` | USB 帯域節約用の FOURCC（カメラ→ホスト間） |
+| `frame_id` | `camera` | ヘッダの座標フレーム（launch では front/rear を設定） |
+| `jpeg_quality` | `80` | publish する JPEG の品質（1–100、帯域とのトレードオフ） |
 
 `mjpeg_server`:
 
 | 名前 | 既定 | 説明 |
 | --- | --- | --- |
-| `topics` | `[/front_camera/image_raw, /rear_camera/image_raw]` | 購読する画像トピック |
+| `topics` | `[…/front_camera/image_raw/compressed, …/rear_camera/image_raw/compressed]` | 購読する CompressedImage トピック |
 | `host` / `port` | `0.0.0.0` / `8080` | HTTP の待ち受け |
-| `jpeg_quality` | `80` | 配信 JPEG の品質（1–100、帯域とのトレードオフ） |
-| `stream_fps` | `15.0` | 配信側のフレームレート上限（ネットワーク負荷の調整） |
+| `stream_fps` | `15.0` | HTTP 配信のフレームレート上限（カメラの fps と揃える） |
 
-> **代替**: 標準の [`web_video_server`](https://github.com/RobotWebTools/web_video_server)（`sudo apt install ros-humble-web-video-server`）でも同じ `image_raw` トピックを HTTP/MJPEG 配信できる。`mjpeg_server` は依存を増やさず前後を 1 ページにまとめた自前版。
+> **代替**: 標準の [`web_video_server`](https://github.com/RobotWebTools/web_video_server)（`sudo apt install ros-humble-web-video-server`）でも同じ `image_raw/compressed` トピックを HTTP/MJPEG 配信できる。`mjpeg_server` は依存を増やさず前後を 1 ページにまとめた自前版。
 
 ### テスト手順
 
 **1. 純ロジック（ROS 不要・PC で即実行）**
 
-`frame.py`（FOURCC / stride）と `mjpeg.py`（multipart 整形）は純 Python なので pytest で確認できる。
+`frame.py`（FOURCC / デバイス解決）と `mjpeg.py`（multipart 整形）は純 Python なので pytest で確認できる。
 
 ```bash
 pytest src/kuas_mechlab3/test/test_frame.py src/kuas_mechlab3/test/test_mjpeg.py -v
@@ -409,9 +412,9 @@ pytest src/kuas_mechlab3/test/test_frame.py src/kuas_mechlab3/test/test_mjpeg.py
 ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0 rear_device:=/dev/video2
 
 # 別端末で配信レートと中身を確認
-ros2 topic hz /front_camera/image_raw      # ≈ fps 出ていれば OK
-ros2 topic echo --no-arr /rear_camera/image_raw   # width/height/encoding を確認
-ros2 run rqt_image_view rqt_image_view     # GUI があれば映像を直接確認
+ros2 topic hz /front_camera/image_raw/compressed       # ≈ fps 出ていれば OK
+ros2 topic echo --no-arr /rear_camera/image_raw/compressed   # format=jpeg / data サイズを確認
+ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピックを選んで確認
 ```
 
 **3. HTTP 配信（teleop 視点）の確認**
@@ -437,11 +440,11 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば映像を直接確�
 │       │   │   ├── mbed_driver.py     # ROSノード: cmd_vel→mbed
 │       │   │   └── teleop_keyboard.py # ROSノード: キー→cmd_vel
 │       │   └── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
-│       │       ├── frame.py           # 純: FOURCC / Image フィールド / デバイス解決
+│       │       ├── frame.py           # 純: FOURCC / デバイス解決
 │       │       ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
 │       │       ├── capture.py         # cv2 デバイス I/O
-│       │       ├── camera_node.py     # ROSノード: webcam→image_raw
-│       │       └── mjpeg_server.py    # ROSノード: image 購読→HTTP 配信
+│       │       ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
+│       │       └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
 │       ├── launch/           # ros2 launch ファイル（drivetrain / cameras）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）

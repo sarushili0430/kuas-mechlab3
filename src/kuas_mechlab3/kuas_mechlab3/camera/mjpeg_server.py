@@ -1,14 +1,16 @@
 """ROS2 teleop viewer: subscribe to camera topics and serve them over HTTP.
 
 This is the consumer side of the webcams. It subscribes to one or more
-sensor_msgs/Image topics (the front/rear cameras by default), JPEG-encodes the
-latest frame of each, and serves them as MJPEG (multipart/x-mixed-replace) so a
-remote teleop operator can watch both cameras in a browser while driving.
+sensor_msgs/CompressedImage topics (the front/rear cameras by default, already
+JPEG-encoded at the source) and relays the latest frame of each as MJPEG
+(multipart/x-mixed-replace) so a remote teleop operator can watch both cameras
+in a browser while driving.
 
 Responsibility split: the multipart byte framing lives in ``mjpeg`` (pure,
-pytest), cv2 does the JPEG encoding, and this node owns the ROS subscriptions
-plus the threaded HTTP server. For a batteries-included alternative, the ROS
-``web_video_server`` package serves the same topics without this node.
+pytest) and this node owns the ROS subscriptions plus the threaded HTTP server.
+It does no image processing -- the camera nodes encode -- so it stays cheap on a
+Raspberry Pi. For a batteries-included alternative, the ROS ``web_video_server``
+package serves the same topics without this node.
 """
 
 import select
@@ -18,12 +20,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
-import cv2
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 
 from kuas_mechlab3.camera import mjpeg
 
@@ -142,22 +142,24 @@ class MjpegServerNode(Node):  # type: ignore[misc]
         super().__init__("mjpeg_server")
 
         self.declare_parameter(
-            "topics", ["/front_camera/image_raw", "/rear_camera/image_raw"]
+            "topics",
+            [
+                "/front_camera/image_raw/compressed",
+                "/rear_camera/image_raw/compressed",
+            ],
         )
         self.declare_parameter("host", "0.0.0.0")
         self.declare_parameter("port", 8080)
-        self.declare_parameter("jpeg_quality", 80)
         self.declare_parameter("stream_fps", 15.0)
 
         self._topics = [str(t) for t in self.get_parameter("topics").value]
-        self._quality = int(self.get_parameter("jpeg_quality").value)
         self._store = FrameStore()
         self._stop = threading.Event()
 
         # default-arg t=topic binds the loop variable per subscription callback.
         self._subs = [
             self.create_subscription(
-                Image,
+                CompressedImage,
                 topic,
                 lambda msg, t=topic: self._on_image(t, msg),
                 qos_profile_sensor_data,
@@ -178,15 +180,9 @@ class MjpegServerNode(Node):  # type: ignore[misc]
             f"mjpeg_server up: http://{host}:{port}/ streaming {self._topics}"
         )
 
-    def _on_image(self, topic: str, msg: Image) -> None:
-        """JPEG-encode an incoming frame and stash it for the HTTP handlers."""
-        frame = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-            msg.height, msg.width, -1
-        )
-        params = [int(cv2.IMWRITE_JPEG_QUALITY), self._quality]
-        ok, buf = cv2.imencode(".jpg", frame, params)
-        if ok:
-            self._store.put(topic, buf.tobytes())
+    def _on_image(self, topic: str, msg: CompressedImage) -> None:
+        """Stash the incoming JPEG bytes for the HTTP handlers (no re-encode)."""
+        self._store.put(topic, bytes(msg.data))
 
     def shutdown(self) -> None:
         """Stop the streaming loops and the HTTP server thread."""
