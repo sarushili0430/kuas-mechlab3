@@ -264,11 +264,225 @@ ros2 run kuas_mechlab3 teleop_keyboard
 
 ---
 
+## Nucleo ファームウェア（mbed）
+
+`mbed_driver` の通信相手となる **STM32 NUCLEO-F091RC のファームウェア**。このリポジトリの Python 側は以下の「契約」でシリアル通信する（`protocol.py` / `test_protocol.py` が正）ので、Nucleo にはこの契約を満たすファームを**書き込んでおく必要がある**。モーターが全く動かないときは、まずこのファームが焼かれているか・契約が一致しているかを疑うこと。
+
+| 方向 | 形式 | 例 |
+| --- | --- | --- |
+| Pi → Nucleo（指令） | `s1/s2/s3/s4/d`（float 4 つを `/` 区切り、終端は文字 `d`。改行なし） | `10.50/10.50/-10.50/-10.50/d` |
+| Nucleo → Pi（テレメトリ） | `sp .. \| rpm .. \| pwm ..` を 1 行ずつ（改行区切り） | `sp 10.50 10.50 0.00 0.00 \| rpm 0.00 0.00 0.00 0.00 \| pwm 1500 1500 0 0` |
+
+- ボーレート **115200**、ST-Link の USB シリアル（`/dev/ttyACM0`）を使う。
+- 車輪の対応は `s1=FL（左前） / s2=BL（左後） / s3=FR（右前） / s4=BR（右後）`（`kinematics.py` と同じ）。
+- setpoint のフルスケールは **±10.5**（Pi 側の `wheel_setpoint` 既定値と揃える）。エンコーダ不動のため**オープンループ**で、`|sp|=10.5` を `PWM_CAP=1500`（分母 4000 ≈ 37.5%）の PWM に直結する。
+- **ファーム側ウォッチドッグ入り**: 指令が 0.5 秒途絶える（USB 抜け・Pi 側クラッシュ含む）と全輪停止する。
+
+### ピン割当（Tomoe-11 配線）
+
+実機の配線は `robot-pinout-power-reference.pdf`（Tomoe-11 — Pinout & Power Reference）が正。L298N は **ENA/ENB ジャンパ ON のまま IN ピンを直接 PWM** する（モーター 1 個につき PWM 2 本の sign-magnitude 駆動。EN ピンは使わない）:
+
+| 車輪 | L298N in | はんだパッド | MCU | ファームトークン | Timer·ch |
+| --- | --- | --- | --- | --- | --- |
+| s1: M1 FL（左前） | IN1 / IN2 | D7 / D8 | PA_8 / PA_9 | `D7` / `D8` | TIM1_CH1 / CH2 |
+| s2: M2 BL（左後） | IN3 / IN4 | D5 / D4 | PB_4 / PB_5 | `D5` / `D4` | TIM3_CH1 / CH2 |
+| s3: M3 FR（右前） | IN1 / IN2 | D11 / D12 | PA_7 / PA_6 | `PA_7_ALT2` / `PA_6_ALT0` | TIM17_CH1 / TIM16_CH1 |
+| s4: M4 BR（右後） | IN3 / IN4 | D2 / PA_11 | PA_10 / PA_11 | `D2` / `PA_11` | TIM1_CH3 / CH4 |
+
+> `_ALT` トークンは内部タイマーを選ぶ**ファームウェア専用表記**（はんだ付けするパッドは silk どおり D11/D12）。M3 だけ TIM16/17 に逃がすのは TIM1/TIM3 のチャネルと衝突させないため。
+
+### プロジェクト構成（PlatformIO）
+
+ファームの実体は **`firmware/robot/`** にある。PC（または Pi）に [PlatformIO Core](https://platformio.org/install/cli)（`pip install platformio`）を入れてビルドする:
+
+```
+firmware/robot/
+├── platformio.ini
+├── mbed_app.json
+└── src/
+    └── main.cpp
+```
+
+`platformio.ini`:
+
+```ini
+[env:nucleo_f091rc]
+platform = ststm32
+board = nucleo_f091rc
+framework = mbed
+```
+
+`mbed_app.json` — **必須**。Mbed OS 6 既定の minimal-printf は `%f` を出力できず、テレメトリが `sp %f ...` のまま壊れて `parse_telemetry` に全行捨てられるため、浮動小数点出力を有効化する:
+
+```json
+{
+  "target_overrides": {
+    "*": {
+      "platform.minimal-printf-enable-floating-point": true,
+      "platform.minimal-printf-set-floating-point-max-decimals": 2
+    }
+  }
+}
+```
+
+`src/main.cpp`:
+
+```cpp
+#include "mbed.h"
+#include <cstdio>
+#include <cstring>
+
+// ===== Tomoe-11 ピン割当（robot-pinout-power-reference.pdf §1a が正） =====
+// L298N は ENA/ENB ジャンパ ON のまま、IN ピンを直接 PWM する
+// （モーター 1 個につき PWM 2 本の sign-magnitude 駆動。EN ピンは使わない）。
+struct MotorPins {
+    PinName in1;  // 正転側
+    PinName in2;  // 逆転側
+};
+static const MotorPins MOTOR_PINS[4] = {
+    {D7, D8},                // s1: M1 FL（PA_8 TIM1_CH1 / PA_9 TIM1_CH2）
+    {D5, D4},                // s2: M2 BL（PB_4 TIM3_CH1 / PB_5 TIM3_CH2）
+    {PA_7_ALT2, PA_6_ALT0},  // s3: M3 FR（D11 TIM17_CH1 / D12 TIM16_CH1）
+    {D2, PA_11},             // s4: M4 BR（PA_10 TIM1_CH3 / PA_11 TIM1_CH4）
+};
+
+static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
+static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
+static const int   PWM_CAP      = 1500;   // ≈37.5%。突入電流・速度を抑える上限
+static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
+static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
+static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz
+
+class L298NMotor {
+public:
+    explicit L298NMotor(const MotorPins& p) : in1_(p.in1), in2_(p.in2) {
+        in1_.period_us(1000000 / PWM_FREQ_HZ);
+        in2_.period_us(1000000 / PWM_FREQ_HZ);
+        apply(0);
+    }
+    // pwm: -PWM_MAX..PWM_MAX（PWM_CAP で飽和）。符号が回転方向。
+    // 正転は IN1 に PWM・IN2=0、逆転はその逆（fast-decay / coast）。
+    void apply(int pwm) {
+        if (pwm >  PWM_CAP) pwm =  PWM_CAP;
+        if (pwm < -PWM_CAP) pwm = -PWM_CAP;
+        pwm_ = pwm;
+        float duty = float(pwm >= 0 ? pwm : -pwm) / PWM_MAX;
+        in1_.write(pwm > 0 ? duty : 0.0f);
+        in2_.write(pwm < 0 ? duty : 0.0f);
+    }
+    int pwm() const { return pwm_; }
+
+private:
+    PwmOut in1_, in2_;
+    int pwm_ = 0;
+};
+
+static BufferedSerial pc(USBTX, USBRX, 115200);
+
+static int elapsed_ms(const Timer& t) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               t.elapsed_time())
+        .count();
+}
+
+int main() {
+    L298NMotor motors[4] = {
+        L298NMotor(MOTOR_PINS[0]), L298NMotor(MOTOR_PINS[1]),
+        L298NMotor(MOTOR_PINS[2]), L298NMotor(MOTOR_PINS[3]),
+    };
+    pc.set_blocking(false);
+
+    float sp[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    char rx[64];
+    size_t rx_len = 0;
+    Timer cmd_timer, tel_timer;
+    cmd_timer.start();
+    tel_timer.start();
+
+    while (true) {
+        // --- 受信: 終端 'd' までためて "s1/s2/s3/s4" をパース ---
+        char c;
+        while (pc.read(&c, 1) == 1) {
+            if (c == 'd') {
+                rx[rx_len] = '\0';
+                float v[4];
+                if (sscanf(rx, "%f/%f/%f/%f", &v[0], &v[1], &v[2], &v[3]) == 4) {
+                    for (int i = 0; i < 4; i++) {
+                        sp[i] = v[i];
+                        motors[i].apply(int(v[i] / SP_FULL * PWM_CAP));
+                    }
+                    cmd_timer.reset();
+                }
+                rx_len = 0;
+            } else if (rx_len < sizeof(rx) - 1) {
+                rx[rx_len++] = c;
+            } else {
+                rx_len = 0;  // 壊れたパケットは捨てて次の 'd' で再同期
+            }
+        }
+
+        // --- ウォッチドッグ: USB 抜け・Pi 停止でも確実に止める ---
+        if (elapsed_ms(cmd_timer) > WATCHDOG_MS) {
+            for (int i = 0; i < 4; i++) {
+                sp[i] = 0.0f;
+                motors[i].apply(0);
+            }
+        }
+
+        // --- テレメトリ: 50 Hz（エンコーダ不動のため rpm は常に 0） ---
+        if (elapsed_ms(tel_timer) >= TELEMETRY_MS) {
+            tel_timer.reset();
+            char line[120];
+            int n = snprintf(
+                line, sizeof(line),
+                "sp %.2f %.2f %.2f %.2f | rpm 0.00 0.00 0.00 0.00 | pwm %d %d %d %d\n",
+                sp[0], sp[1], sp[2], sp[3],
+                motors[0].pwm(), motors[1].pwm(), motors[2].pwm(), motors[3].pwm());
+            pc.write(line, n);
+        }
+        ThisThread::sleep_for(1ms);
+    }
+}
+```
+
+### 書き込み手順
+
+Nucleo を USB で PC に接続して（ST-Link 側のミニ USB）:
+
+```bash
+cd firmware/robot
+pio run                 # ビルド
+pio run -t upload       # ST-Link 経由で書き込み
+```
+
+PlatformIO を使わない場合は、ビルドで出た `.pio/build/nucleo_f091rc/firmware.bin` を、マウントされた `NODE_F091RC` ドライブに**ドラッグ & ドロップ**するだけでも書き込める。
+
+### ファーム単体での動作確認（driver なし・車輪を浮かせて）
+
+書き込み後、Pi（または PC）から素のシリアルで契約どおり動くか確認できる（`mbed_driver` とは**同時に開けない**ので必ず driver 停止中に行う）:
+
+```bash
+stty -F /dev/ttyACM0 115200 raw -echo
+
+# テレメトリが流れてくるか（"sp .. | rpm .. | pwm .." が 50 Hz で出れば OK）
+timeout 2 cat /dev/ttyACM0
+
+# 全輪をゆっくり回す（→ 0.5 秒後にウォッチドッグで自動停止すれば OK）
+printf '3.00/3.00/3.00/3.00/d' > /dev/ttyACM0
+
+# 明示停止
+printf '0.00/0.00/0.00/0.00/d' > /dev/ttyACM0
+```
+
+ここまで通れば、あとは「ラズパイ実機での bring-up」どおり `mbed_driver` を起動するだけで動く。**指令を送ってもテレメトリの `pwm` が変わるのにモーターが回らない**場合は配線（EN ジャンパ・IN ピン・モーター電源 12V）側、`pwm` 自体が変わらない場合はピン割当かパケット形式のずれを疑う。
+
+---
+
 ## ラズパイ実機での bring-up（config → デモ）
 
 配線済みの ML3 を Raspberry Pi（ROS2 Humble）から**設定 〜 デモ走行**まで動かす手順。**確認は必ず車輪を浮かせて**から行うこと（全開 PWM で台から飛び出す・突入電流が出る）。
 
-> **前提（このリポジトリ外で用意）**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に ML3 ファーム（Mbed / PlatformIO、`pio run -t upload`）を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=1500` ≈ 37.5%）で動く。
+> **前提**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に上の「**Nucleo ファームウェア（mbed）**」を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=1500` ≈ 37.5%）で動く。
 
 ### 1. Pi の config
 
@@ -329,7 +543,7 @@ teleop のターミナルで**キーを押している間だけ**動く（離す
 
 `cmd_vel` は標準インターフェースなので、teleop の代わりに `teleop_twist_keyboard` や nav2 からも走らせられる。
 
-> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。ただし **USB が物理的に抜けた場合**は現ファームが最後の指令を保持し続ける（ファーム側ウォッチドッグ未実装）。無拘束デモの前は車輪を浮かせるか有線で。初回配線時の 1 輪ずつの方向検証には、別途 bring-up 用の per-wheel jog ツール（同じ `s1/s2/s3/s4/d` パケットを送る）を driver 停止中に使う。
+> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。さらに上の「Nucleo ファームウェア（mbed）」にはファーム側ウォッチドッグ（0.5s）があり、**USB が物理的に抜けても**全輪停止する。古いファームのままだと最後の指令を保持し続けるので、無拘束デモの前に必ず最新ファームを書き込み、車輪を浮かせて確認すること。初回配線時の 1 輪ずつの方向検証には、別途 bring-up 用の per-wheel jog ツール（同じ `s1/s2/s3/s4/d` パケットを送る）を driver 停止中に使う。
 
 ---
 
