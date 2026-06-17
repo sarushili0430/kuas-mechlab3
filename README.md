@@ -274,13 +274,13 @@ ros2 run kuas_mechlab3 teleop_keyboard
 | Nucleo → Pi（テレメトリ） | `sp .. \| rpm .. \| pwm ..` を 1 行ずつ（改行区切り） | `sp 10.50 10.50 0.00 0.00 \| rpm 0.00 0.00 0.00 0.00 \| pwm 1500 1500 0 0` |
 
 - ボーレート **115200**、ST-Link の USB シリアル（`/dev/ttyACM0`）を使う。
-- 車輪の対応は `s1=FL（左前） / s2=BL（左後） / s3=FR（右前） / s4=BR（右後）`（`kinematics.py` と同じ）。
+- 車輪の対応（公称）は `s1=FL / s2=BL / s3=FR / s4=BR`（`kinematics.py` と同じ）。スキッドステアでは **左側=s1,s2 / 右側=s3,s4** のグルーピングだけが効くので、各輪の前進向きはファーム側の符号 `DIR[4]`（`main.cpp`）で吸収する。2026-06-16 のジョグ試験で `DIR={-1,+1,-1,+1}` と確定（実機物理コーナーは ch0=後左, ch1=前左, ch2=後右, ch3=前右）。1 輪が逆回転するときは該当 `DIR[i]` を反転して再フラッシュ（下記「モーターアライメント検証」）。
 - setpoint のフルスケールは **±10.5**（Pi 側の `wheel_setpoint` 既定値と揃える）。エンコーダ不動のため**オープンループ**で、`|sp|=10.5` を `PWM_CAP=1500`（分母 4000 ≈ 37.5%）の PWM に直結する。
 - **ファーム側ウォッチドッグ入り**: 指令が 0.5 秒途絶える（USB 抜け・Pi 側クラッシュ含む）と全輪停止する。
 
 ### ピン割当（Tomoe-11 配線）
 
-実機の配線は `robot-pinout-power-reference.pdf`（Tomoe-11 — Pinout & Power Reference）が正。L298N は **ENA/ENB ジャンパ ON のまま IN ピンを直接 PWM** する（モーター 1 個につき PWM 2 本の sign-magnitude 駆動。EN ピンは使わない）:
+実機の配線は [`docs/robot-pinout-power-reference.md`](./docs/robot-pinout-power-reference.md)（PDF 版 `docs/robot-pinout-power-reference.pdf` も同梱。Tomoe-11 — Pinout & Power Reference）が正。L298N は **ENA/ENB ジャンパ ON のまま IN ピンを直接 PWM** する（モーター 1 個につき PWM 2 本の sign-magnitude 駆動。EN ピンは使わない）:
 
 | 車輪 | L298N in | はんだパッド | MCU | ファームトークン | Timer·ch |
 | --- | --- | --- | --- | --- | --- |
@@ -340,11 +340,19 @@ struct MotorPins {
     PinName in2;  // 逆転側
 };
 static const MotorPins MOTOR_PINS[4] = {
-    {D7, D8},                // s1: M1 FL（PA_8 TIM1_CH1 / PA_9 TIM1_CH2）
-    {D5, D4},                // s2: M2 BL（PB_4 TIM3_CH1 / PB_5 TIM3_CH2）
-    {PA_7_ALT2, PA_6_ALT0},  // s3: M3 FR（D11 TIM17_CH1 / D12 TIM16_CH1）
-    {D2, PA_11},             // s4: M4 BR（PA_10 TIM1_CH3 / PA_11 TIM1_CH4）
+    {D7, D8},                // s1/ch0: M1（公称 FL）PA_8 TIM1_CH1 / PA_9 TIM1_CH2 — 実機物理=後左 BL
+    {D5, D4},                // s2/ch1: M2（公称 BL）PB_4 TIM3_CH1 / PB_5 TIM3_CH2 — 実機物理=前左 FL
+    {PA_7_ALT2, PA_6_ALT0},  // s3/ch2: M3（公称 FR）D11 TIM17_CH1 / D12 TIM16_CH1 — 実機物理=後右 BR
+    {D2, PA_11},             // s4/ch3: M4（公称 BR）PA_10 TIM1_CH3 / PA_11 TIM1_CH4 — 実機物理=前右 FR
 };
+
+// 各輪の正転符号: +1 なら +setpoint で前進、-1 で反転。
+// 2026-06-16 のジョグ試験でハード確定（arthur/dev で end-to-end 検証済み）。
+// 物理コーナー: ch0=後左(BL), ch1=前左(FL), ch2=後右(BR), ch3=前右(FR)。
+// 左側=ch0+ch1 / 右側=ch2+ch3 はスキッドステアの左右グルーピングと一致するので、
+// ホスト側 kinematics（s1,s2=左 / s3,s4=右）は無改修でよい。
+// 1 輪が逆回転する場合は該当 DIR[i] の符号を反転して再フラッシュ（scripts/pi-jog.py で確認）。
+static const int DIR[4] = {-1, +1, -1, +1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
@@ -409,7 +417,7 @@ int main() {
                 if (sscanf(rx, "%f/%f/%f/%f", &v[0], &v[1], &v[2], &v[3]) == 4) {
                     for (int i = 0; i < 4; i++) {
                         sp[i] = v[i];
-                        motors[i].apply(int(v[i] / SP_FULL * PWM_CAP));
+                        motors[i].apply(int(DIR[i] * v[i] / SP_FULL * PWM_CAP));
                     }
                     cmd_timer.reset();
                 }
@@ -475,6 +483,21 @@ printf '0.00/0.00/0.00/0.00/d' > /dev/ttyACM0
 ```
 
 ここまで通れば、あとは「ラズパイ実機での bring-up」どおり `mbed_driver` を起動するだけで動く。**指令を送ってもテレメトリの `pwm` が変わるのにモーターが回らない**場合は配線（EN ジャンパ・IN ピン・モーター電源 12V）側、`pwm` 自体が変わらない場合はピン割当かパケット形式のずれを疑う。
+
+### モーターアライメント検証（scripts/）
+
+各輪の前進向き（ファームの `DIR[4]`）は **`scripts/` の素のシリアルツール**で検証する。どちらも ROS 非依存（pyserial のみ）で `mbed_driver` と同じ `s1/s2/s3/s4/d` を送るため、**`mbed_driver` 停止中・車輪を浮かせて**実行する。
+
+```bash
+# 1 輪ずつ前進方向に回し、その輪のチャンネルだけが energize されるか確認
+python3 scripts/pi-jog.py 0     # 以降 1, 2, 3（ch0=後左 / ch1=前左 / ch2=後右 / ch3=前右）
+# 逆回転した輪は firmware/robot/src/main.cpp の該当 DIR[i] を反転 → 再ビルド・再フラッシュ
+
+# 全体運動の確認（left/right は REP-103 / turn_sign=+1 準拠）
+python3 scripts/pi-drivetest.py forward     # backward | left | right | stop
+```
+
+> 旋回（`a`/`d`）が逆になるのは各輪の前進向きではなく左右割当の問題なので、ファームではなく driver の `turn_sign` で直す。各輪の向きと直進が確認できたら、通常の teleop（`ros2 launch kuas_mechlab3 teleop_launch.py` / `ros2 run kuas_mechlab3 teleop_keyboard`）へ進む。
 
 ---
 
@@ -543,7 +566,7 @@ teleop のターミナルで**キーを押している間だけ**動く（離す
 
 `cmd_vel` は標準インターフェースなので、teleop の代わりに `teleop_twist_keyboard` や nav2 からも走らせられる。
 
-> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。さらに上の「Nucleo ファームウェア（mbed）」にはファーム側ウォッチドッグ（0.5s）があり、**USB が物理的に抜けても**全輪停止する。古いファームのままだと最後の指令を保持し続けるので、無拘束デモの前に必ず最新ファームを書き込み、車輪を浮かせて確認すること。初回配線時の 1 輪ずつの方向検証には、別途 bring-up 用の per-wheel jog ツール（同じ `s1/s2/s3/s4/d` パケットを送る）を driver 停止中に使う。
+> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。さらに上の「Nucleo ファームウェア（mbed）」にはファーム側ウォッチドッグ（0.5s）があり、**USB が物理的に抜けても**全輪停止する。古いファームのままだと最後の指令を保持し続けるので、無拘束デモの前に必ず最新ファームを書き込み、車輪を浮かせて確認すること。初回配線時の 1 輪ずつの方向検証には、`scripts/pi-jog.py`（同じ `s1/s2/s3/s4/d` パケットを送る per-wheel jog ツール）を driver 停止中に使う（上記「モーターアライメント検証」）。
 
 ---
 
@@ -817,7 +840,10 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
 │       └── setup.cfg
-├── docs/                     # 補足ドキュメント（teleop-client.md / 操縦 UI の cockpit.html）
+├── firmware/
+│   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
+├── docs/                     # 補足ドキュメント（teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
+├── scripts/                  # bring-up 用スクリプト（pi-jog.py / pi-drivetest.py、ROS 非依存・pyserial のみ）
 ├── .python-version           # Python のバージョン固定（3.10.18）
 ├── pyproject.toml            # black / mypy / pytest / coverage / commitizen 設定
 ├── requirements.txt          # 純 Python のランタイム依存
