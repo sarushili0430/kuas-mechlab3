@@ -908,7 +908,49 @@ PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` �
 - **遅延**: オフボード推論のネットワーク往復は、ACT の**アクションチャンク**（先の数ステップをまとめて予測してオープンループ実行）で隠せる。
 - **解像度**: teleop 配信は 320x240 だが、学習用にはキャプチャ解像度を上げてもよい（配信と収集の解像度は分離できる）。
 
-**モデルの選択（参考）**: 今回は**ルートが単一挙動で言語条件付けが不要**なので **ACT が本命**（軽く・速い・2 自由度に十分）。言語でルートを指定したくなったら、同じデータのまま **SmolVLA**（軽量 VLA）等へ載せ替えできる。基盤がモデル非依存なのが Phase 1–3 の狙い。
+**モデルの選択（参考）**: 今回は**ルートが単一挙動で言語条件付けが不要**なので **ACT が本命**（軽く・速い・2 自由度に十分）。言語でルートを指定したくなったら、同じデータのまま **SmolVLA**（軽量 VLA）等へ載せ替えできる。基盤がモデル非依存なのが Phase 1–3 の狙い。詳細は下の「学習レシピ」。
+
+### 推論時の制御ループ（WebSocket 越し）
+
+学習済みモデルは**ロボットには載せず、別 PC（GPU）で「WebSocket クライアント」として動く** — `teleop_ws_client`（人間の WASD 送信）の**人間部分をモデルに差し替えるだけ**で、`teleop_server` 以降は無変更。つまり「**AI が WebSocket 経由で制御する**」= モデルが人間と同じ `{"vx","wz"}` を `ws://<pi>:9001` に流すこと。**モデルの種類（ACT でも VLA でも）はこの WS インターフェースとは独立**で、出口は常に `{"vx","wz"}`。
+
+```
+[GPU PC]  カメラ映像（MJPEG http://<pi>:8080）を入力
+   └─ policy(画像) → (vx, wz) のアクションチャンクを予測
+        └─ {"vx":.., "wz":..} を ws://<pi>:9001 へ 10–20Hz 送信   ← 人間と同じスロット
+[Pi]  teleop_server → cmd_vel → mbed_driver → mbed
+        （hold_timeout / mbed ウォッチドッグがそのまま安全網。policy が固まっても停止）
+```
+
+policy-runner（Phase 7 で実装する擬似コード。中身は「人間の代わりに推論結果を送る WS クライアント」）:
+
+```python
+ws = websocket.connect("ws://<pi>:9001")
+while True:
+    frame = grab_latest_jpeg("http://<pi>:8080/stream?topic=/front_camera/image_raw/compressed")
+    chunk = policy.select_action(preprocess(frame))   # (vx, wz) の系列を予測
+    vx, wz = chunk[0]                                  # or temporal ensemble
+    ws.send(json.dumps({"vx": float(vx), "wz": float(wz)}))
+    sleep(1 / CONTROL_HZ)
+```
+
+学習ターゲットを `/cmd_norm`（= この `{vx,wz}` そのもの）にしたのは、ここで**人間とモデルの出力空間を一致させる**ため。
+
+### 学習レシピ（何を・どう学習するか）
+
+| 項目 | 本命: **ACT** | 言語 / VLA 路線: **SmolVLA** |
+| --- | --- | --- |
+| 種別 | Action Chunking Transformer（ResNet 画像エンコーダ + Transformer + CVAE, ~80M） | 軽量 VLA（視覚 + 言語 + 行動, ~450M。事前学習済みを finetune） |
+| 観測 | 前カメラ画像（+ 後カメラ）。固定ルートなので状態は最小（無 or 直前の行動を state に） | 同上 + 言語命令（単一挙動なら定数 `"follow the route"`） |
+| 行動 | `(vx, wz)` を**チャンク**で出力（例: 10Hz で 10–20 ステップ ＝ 1–2 秒先まで） | 同上 |
+| データ | LeRobot 形式（Phase 3 の出力）: `observation.images.front` + `action = (vx, wz)` | 同上 |
+| 学習 | `lerobot` の `train.py`（`policy=act`）。10–20 万 step / batch 8 / GPU 1 枚 / 数時間 | `policy=smolvla` で事前学習から finetune。VRAM 多め・遅い |
+| 推論速度 | ms オーダー（10–20Hz 余裕） | 重い。アクションチャンクで遅延を吸収して 5–10Hz |
+| 使いどき | **単一固定ルートに最適。まずこれ** | 言語指定・複数ルート・汎化が欲しくなったら |
+
+**手順**: ① データ収集（Phase 4）→ LeRobot 形式へ変換（Phase 3） ② `lerobot` を入れて ACT を上記設定で finetune ③ **閉ループ評価**（実機で成功率を見る。オフライン loss は当てにしない） ④ 失敗パターンのリカバリ走行を追加収集 → 再学習（簡易 DAgger） ⑤ policy-runner（上の擬似コード）で WS 越しにデプロイ。
+
+> **「LLM で制御」したい場合**: ここでの "LLM 系" は **SmolVLA**（言語も食える VLA）を指す。ACT は厳密には LLM ではないが、**WS 越しに `{vx,wz}` を出す役割は全く同じ**。固定・単一ルートなら ACT が速くて確実、言語条件付けが要るなら SmolVLA、という住み分け（どちらも Phase 1–3 の同じデータセットで学習できる）。
 
 ---
 
