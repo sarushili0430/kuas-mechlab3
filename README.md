@@ -885,6 +885,8 @@ PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` �
 
 固定ルートを人間のテレオプで走らせ、その **(映像, 操作) ログ**から視覚運動ポリシー（ACT / VLA 等）を**模倣学習**し、最終的に **AI が人間と同じ WebSocket スロットから `{"vx","wz"}` を出して全自動運転する**ところまでの段取り。要は **AI は人間のテレオプ・クライアントを「差し替える」だけ**で、`teleop_server` 以降（`cmd_vel` → `mbed_driver` → mbed → 安全機構）には一切手を入れない。
 
+> 📋 **AI 向けのフェーズ別・詳細な実行計画は [`docs/autonomy-plan.md`](./docs/autonomy-plan.md)**。本節はその俯瞰。
+
 **設計の要（なぜこの形か）**
 
 - **学習ターゲット = `/cmd_norm`**（WS 境界の正規化指令 [-1, 1]）。人間も AI も同じスロットを埋めるので、ログするのはスケール後の `cmd_vel` ではなく **AI の出力空間そのもの**である `/cmd_norm`。→ 学習と推論が対称になる。
@@ -908,7 +910,7 @@ PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` �
 - **遅延**: オフボード推論のネットワーク往復は、ACT の**アクションチャンク**（先の数ステップをまとめて予測してオープンループ実行）で隠せる。
 - **解像度**: teleop 配信は 320x240 だが、学習用にはキャプチャ解像度を上げてもよい（配信と収集の解像度は分離できる）。
 
-**モデルの選択（参考）**: 今回は**ルートが単一挙動で言語条件付けが不要**なので **ACT が本命**（軽く・速い・2 自由度に十分）。言語でルートを指定したくなったら、同じデータのまま **SmolVLA**（軽量 VLA）等へ載せ替えできる。基盤がモデル非依存なのが Phase 1–3 の狙い。詳細は下の「学習レシピ」。
+**モデルは 1 つに絞らない（両方向キープ）**: LeRobot 形式（Phase 3 の出力）にしておけば、**ACT（ゼロ学習）も SmolVLA（事前学習を finetune）も同じデータセットを 1 フラグで切替**できる（`--policy.type=act` ↔ `--policy.path=lerobot/smolvla_base`）。固定単一ルートで軽さ・低レイテンシ重視なら ACT、少データ・頑健性・将来の言語指示なら SmolVLA。データを録り直す必要はない（基盤がモデル非依存なのが Phase 1–3 の狙い）。
 
 ### 推論時の制御ループ（WebSocket 越し）
 
@@ -938,7 +940,7 @@ while True:
 
 ### 学習レシピ（何を・どう学習するか）
 
-| 項目 | 本命: **ACT** | 言語 / VLA 路線: **SmolVLA** |
+| 項目 | **ACT**（ゼロ学習） | **SmolVLA**（finetune） |
 | --- | --- | --- |
 | 種別 | Action Chunking Transformer（ResNet 画像エンコーダ + Transformer + CVAE, ~80M） | 軽量 VLA（視覚 + 言語 + 行動, ~450M。事前学習済みを finetune） |
 | 観測 | 前カメラ画像（+ 後カメラ）。固定ルートなので状態は最小（無 or 直前の行動を state に） | 同上 + 言語命令（単一挙動なら定数 `"follow the route"`） |
@@ -987,7 +989,7 @@ while True:
 │       └── setup.cfg
 ├── firmware/
 │   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
-├── docs/                     # 補足ドキュメント（teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
+├── docs/                     # 補足ドキュメント（autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
 ├── scripts/                  # bring-up 用スクリプト
 │   ├── start-all.sh          # driver + カメラ + teleop を一発起動（Ctrl+C で一括停止）
 │   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
