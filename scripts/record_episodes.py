@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""人間のテレオプ・デモ走行を 1 エピソードずつ rosbag に記録する（模倣学習データ収集）。
+
+固定ルートの各走行 = 1 bag + meta.json（ルート / 操縦者 / 成功・失敗ラベル）。
+ルートを走り、Enter で保存、`d` で失敗走行を破棄、これを繰り返す。記録トピックは
+`/cmd_norm`（= 行動ラベル。teleop_server が出す正規化指令）+ 前後カメラ + cmd_vel /
+車輪テレメトリ。AI は将来この `/cmd_norm` と同じ値を WebSocket に出すので、これが
+そのまま学習ターゲットになる。
+
+責任分離: このスクリプトは I/O だけ（subprocess=ros2 bag, シグナル, stdin, ファイル）。
+データセット配置とメタデータのスキーマは pure・pytest 対象の ``kuas_mechlab3.recording``
+が単一所有する。
+
+実行は ``scripts/start-record.sh``（ROS 環境を source する）経由を推奨。あるいは
+install/setup.bash を既に source 済みのシェルから直接:
+
+    python3 scripts/record_episodes.py --route route_a --operator koyu
+"""
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from kuas_mechlab3.recording import (
+    build_metadata,
+    default_topics,
+    episode_dirname,
+    format_duration,
+    normalize_label,
+)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the recorder CLI (route / operator / output dir / topic toggles)."""
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument("--route", required=True, help="ルートのラベル（例: route_a）")
+    p.add_argument(
+        "--operator", default=os.environ.get("USER", "unknown"), help="操縦者名"
+    )
+    p.add_argument(
+        "--out", default="datasets/raw", help="データセットのルートディレクトリ"
+    )
+    p.add_argument("--no-rear", action="store_true", help="後カメラを記録しない")
+    p.add_argument(
+        "--no-state", action="store_true", help="cmd_vel / 車輪テレメトリを記録しない"
+    )
+    p.add_argument("--start-index", type=int, default=1, help="エピソード番号の開始値")
+    p.add_argument(
+        "--storage",
+        default="sqlite3",
+        choices=("sqlite3", "mcap"),
+        help="rosbag2 ストレージ",
+    )
+    return p.parse_args(argv)
+
+
+def _prompt(message: str) -> str:
+    """Read one line; treat EOF (piped/closed stdin) as a quit request."""
+    try:
+        return input(message)
+    except EOFError:
+        return "q"
+
+
+def start_bag(bag_dir: Path, topics: list[str], storage: str) -> subprocess.Popen:
+    """Launch ``ros2 bag record`` into bag_dir in its own session.
+
+    ``start_new_session`` detaches it from the terminal's Ctrl-C so this script
+    alone controls its lifecycle (a clean SIGINT lets rosbag2 finalise the bag).
+    """
+    cmd = ["ros2", "bag", "record", "-o", str(bag_dir), "-s", storage, *topics]
+    return subprocess.Popen(cmd, start_new_session=True)
+
+
+def stop_bag(proc: subprocess.Popen) -> None:
+    """SIGINT the recorder so rosbag2 closes the bag cleanly, then wait it out."""
+    if proc.poll() is None:
+        proc.send_signal(signal.SIGINT)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+def _write_meta(ep_dir: Path, meta: dict) -> None:
+    """Write the episode metadata sidecar next to its bag."""
+    (ep_dir / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Drive the interactive record / label / discard loop until the operator quits."""
+    args = parse_args(argv)
+    topics = default_topics(
+        include_rear=not args.no_rear, include_state=not args.no_state
+    )
+    out_root = Path(args.out).expanduser()
+    out_root.mkdir(parents=True, exist_ok=True)
+    domain = os.environ.get("ROS_DOMAIN_ID")
+    domain_id = int(domain) if domain and domain.isdigit() else None
+
+    print(f"録画ルート: {args.route}   操縦者: {args.operator}")
+    print(f"保存先: {out_root.resolve()}")
+    print(f"記録トピック: {', '.join(topics)}")
+    print(
+        "先に driver / cameras / teleop を起動しておくこと（別ターミナル or start-all.sh）。"
+    )
+
+    index = args.start_index
+    saved = 0
+    proc: subprocess.Popen | None = None
+    ep_dir: Path | None = None
+    started: datetime | None = None
+
+    try:
+        while True:
+            if (
+                _prompt(f"\nエピソード {index:03d}: [Enter]=録画開始 / q=終了 > ")
+                .strip()
+                .lower()
+                == "q"
+            ):
+                break
+
+            started = datetime.now()
+            ep_dir = out_root / episode_dirname(started, args.route, index)
+            ep_dir.mkdir(parents=True, exist_ok=True)
+            proc = start_bag(ep_dir / "bag", topics, args.storage)
+            print(f"● 録画中 -> {ep_dir.name}    [Enter]=保存して停止 / d=破棄")
+
+            action = _prompt("").strip().lower()
+            stop_bag(proc)
+            proc = None
+            stopped = datetime.now()
+            dur = format_duration((stopped - started).total_seconds())
+
+            if action == "d":
+                shutil.rmtree(ep_dir, ignore_errors=True)
+                ep_dir = None
+                print(f"✗ 破棄しました（{dur}）")
+                continue
+
+            label = normalize_label(
+                _prompt(f"  ラベル [Enter]=成功 / f=失敗（録画 {dur}）> ")
+            )
+            notes = _prompt("  メモ（任意, Enter でスキップ）> ").strip()
+            _write_meta(
+                ep_dir,
+                build_metadata(
+                    route=args.route,
+                    operator=args.operator,
+                    index=index,
+                    started_at=started,
+                    stopped_at=stopped,
+                    label=label,
+                    notes=notes,
+                    topics=topics,
+                    bag_dir="bag",
+                    ros_domain_id=domain_id,
+                ),
+            )
+            ep_dir = None
+            saved += 1
+            print(
+                f"✓ 保存: {episode_dirname(started, args.route, index)}  label={label}  ({dur})"
+            )
+            index += 1
+    except KeyboardInterrupt:
+        # Ctrl-C: don't lose an in-flight run -- finalise the bag and save it as
+        # unlabeled so a long demo isn't thrown away (operator can relabel later).
+        print("\n中断を検知。録画中なら finalize します...")
+        if proc is not None:
+            stop_bag(proc)
+            if ep_dir is not None and started is not None:
+                stopped = datetime.now()
+                _write_meta(
+                    ep_dir,
+                    build_metadata(
+                        route=args.route,
+                        operator=args.operator,
+                        index=index,
+                        started_at=started,
+                        stopped_at=stopped,
+                        label="unlabeled",
+                        notes="interrupted (Ctrl-C)",
+                        topics=topics,
+                        bag_dir="bag",
+                        ros_domain_id=domain_id,
+                    ),
+                )
+                saved += 1
+                print(f"✓ 中断保存: {ep_dir.name}  label=unlabeled")
+
+    print(f"\n完了: {saved} エピソード保存（{out_root.resolve()}）")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

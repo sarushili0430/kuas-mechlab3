@@ -673,8 +673,8 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 | モジュール | 責任 | テスト |
 | --- | --- | --- |
-| `teleop_command.py` | 純: JSON 指令の解析（不正は None）/ 正規化→物理量スケール（`utils.clamp` を再利用） | pytest |
-| `teleop_server.py` | ROSノード: WS サーバ（背景 asyncio スレッド）+ 一定レートで `cmd_vel` を publish | colcon |
+| `teleop_command.py` | 純: JSON 指令の解析（不正は None）/ 正規化→物理量スケール / 正規化指令の取り出し（`command_to_norm`、模倣学習の行動ラベル） | pytest |
+| `teleop_server.py` | ROSノード: WS サーバ（背景 asyncio スレッド）+ 一定レートで `cmd_vel`（物理量）と `cmd_norm`（正規化・時刻付き）を publish | colcon |
 | `teleop_ws_client.py` | 操縦者 PC 用の簡易 WS クライアント（WASD→WS、rclpy 非依存） | 手動 |
 
 **安全（三層・既存に上乗せ）**: ① WS 切断で次サイクルに即ゼロ（最速）② `hold_timeout`（既定 0.4s）で無入力なら減衰してゼロ ③ `mbed_driver` の `cmd_timeout` ウォッチドッグ（最終網・無変更）。WS 組み込みの ping/pong（`ping_interval`/`ping_timeout`）で、停止したクライアントの切断も検知する。
@@ -704,6 +704,17 @@ ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 ```json
 {"vx": 0.5, "wz": -0.3}
 ```
+
+### 出力トピック（`cmd_vel` と `cmd_norm`）
+
+`teleop_server` は 2 本を `publish_rate`（既定 20Hz）で出す。クライアント切断・無入力時はどちらも 0。
+
+| トピック | 型 | 中身 | 用途 |
+| --- | --- | --- | --- |
+| `cmd_vel` | `geometry_msgs/Twist` | 物理量（vx[m/s] / wz[rad/s]） | `mbed_driver` を駆動（既存） |
+| `cmd_norm` | `geometry_msgs/TwistStamped` | **正規化指令** vx=linear.x / wz=angular.z（[-1, 1]） | **模倣学習の行動ラベル**（ノードクロックの時刻付き） |
+
+`cmd_norm` は WS をまたぐ生の正規化指令そのもの（デッドゾーン適用前。`command_to_norm`）。人間も将来の AI も同じ WS スロットを埋めるので、これが**そのまま AI が出すべき値＝学習ターゲット**になる。カメラフレーム（`header.stamp`）と同一クロックの時刻が入るので、オフラインで「その瞬間に有効だった映像」と対応付けできる。publish 専用で、ノードの責任は WS→cmd_vel のまま（記録は別関心事 → `scripts/start-record.sh`。下記「自律化ロードマップ」）。
 
 ### 主要パラメータ（teleop_server）
 
@@ -817,6 +828,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 | `scripts/start-teleop.sh` | テレオプ WebSocket ブリッジ（`teleop_launch.py`） | `ws://<ラズパイのIP>:9001` |
 | `scripts/start-cameras.sh` | 前後カメラ + MJPEG 配信（`cameras_launch.py`） | `http://<ラズパイのIP>:8080/` |
 | `scripts/start-all.sh` | driver + カメラ + teleop を 1 プロセスで束ねて起動 | 上記の両方 |
+| `scripts/start-record.sh` | 人間のデモ走行を 1 エピソードずつ rosbag に記録（模倣学習データ収集） | `datasets/raw/` に保存 |
 | `scripts/lib-ros-env.sh` | 共通の環境セットアップ（各スクリプトが `source` する。直接は実行しない） | — |
 
 共通の上書き用環境変数（どのスクリプトでも効く）:
@@ -854,7 +866,49 @@ FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-all.sh
 
 > `start-all.sh` は 3 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。値を変えたいときは各 launch ファイルの既定値を直すか、`start-teleop.sh` / `start-cameras.sh` を個別に使う。
 
+**`scripts/start-record.sh`** — 人間のデモ走行を **1 エピソード = 1 bag + `meta.json`** で記録する（模倣学習のデータ収集 / 下記「自律化ロードマップ」Phase 2）。先に driver・カメラ・teleop を起動しておく（別ターミナル or `start-all.sh`）。記録するのは `/cmd_norm`（行動ラベル）+ 前後カメラ + `cmd_vel` / 車輪テレメトリ。
+
+```bash
+# 先に別ターミナルで start-all.sh（driver + カメラ + teleop）を起動しておく
+./scripts/start-record.sh --route route_a --operator koyu
+#   各エピソード: [Enter]=録画開始 → ルートを走る → [Enter]=保存（成功/失敗ラベル）/ d=破棄
+#   後カメラや車輪テレメトリを省くとき: --no-rear / --no-state
+```
+
+> 保存先は既定 `datasets/raw/<日時>_<route>_NNN/`（`.gitignore` 済み＝コミットされない）。`meta.json` に行動トピック・映像トピック・成功失敗ラベルが入るので、次の「データセット変換」（Phase 3）はこれだけ見れば変換できる。`ros2 bag` には `ros-humble-rosbag2`（`package.xml` で宣言済み・`rosdep` で入る）が要る。
+
 PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` を開くだけ）。映像だけなら `http://<ラズパイのIP>:8080/` を直接開く。
+
+---
+
+## 自律化ロードマップ（LLM が teleop を習得するまで）
+
+固定ルートを人間のテレオプで走らせ、その **(映像, 操作) ログ**から視覚運動ポリシー（ACT / VLA 等）を**模倣学習**し、最終的に **AI が人間と同じ WebSocket スロットから `{"vx","wz"}` を出して全自動運転する**ところまでの段取り。要は **AI は人間のテレオプ・クライアントを「差し替える」だけ**で、`teleop_server` 以降（`cmd_vel` → `mbed_driver` → mbed → 安全機構）には一切手を入れない。
+
+**設計の要（なぜこの形か）**
+
+- **学習ターゲット = `/cmd_norm`**（WS 境界の正規化指令 [-1, 1]）。人間も AI も同じスロットを埋めるので、ログするのはスケール後の `cmd_vel` ではなく **AI の出力空間そのもの**である `/cmd_norm`。→ 学習と推論が対称になる。
+- **推論はロボットに載せない**。別 PC（GPU）で policy を回し、MJPEG 映像を入力に `/cmd_norm` 相当を WS 送信する。`teleop_server` の `hold_timeout` と mbed のウォッチドッグがそのまま安全網として効く（policy がハングしても止まる）。
+- **基盤はモデル非依存**。Phase 1–3 で作る (映像, 行動) データセットは、ACT でも VLA でも同じものを使える。だからモデル選定は後でいくらでも差し替えられる。
+
+| Phase | 状態 | 中身 | 成果物 |
+| --- | --- | --- | --- |
+| **1. 行動の publish** | ✅ 実装済 | `teleop_server` が正規化指令をカメラと同一クロックの時刻付きで publish | トピック `/cmd_norm`（`TwistStamped`, vx=linear.x / wz=angular.z, [-1, 1]） |
+| **2. エピソード録画** | ✅ 実装済 | `ros2 bag` を 1 走行 = 1 bag + `meta.json`（ルート / 操縦者 / 成功失敗ラベル）でラップ | `scripts/start-record.sh` → `datasets/raw/<日時>_<route>_NNN/` |
+| **3. データセット変換** | ⬜ 次 | bag → 固定 Hz（例 10Hz）にリサンプル・同期して映像を mp4 化し **[LeRobot](https://github.com/huggingface/lerobot) 形式**へ。映像に行動を重ねて同期を目視検証 | `datasets/lerobot/`（parquet + mp4 + meta） |
+| **4. データ収集（走行）** | ⬜ | ルートを**条件を散らして** 20〜50 本／ルート。**わざとコースから外して戻すリカバリ走行を必ず混ぜる**（分布ズレ対策） | ラベル付き bag 群 |
+| **5. 学習（finetune）** | ⬜ | LeRobot で **ACT**（Action Chunking Transformer）を baseline に finetune。GPU は別 PC 1 枚で足りる | 学習済みポリシー |
+| **6. 閉ループ評価 + 再収集** | ⬜ | オフライン loss ではなく**実機で成功率**を見る → 失敗パターンのリカバリ走行を足して再学習（簡易 DAgger） | 評価結果 / 改善版ポリシー |
+| **7. デプロイ（自律運転）** | ⬜ | 別 GPU 機で policy-runner: MJPEG 入力 → `{"vx","wz"}` を `ws://<pi>:9001` へ送信（**人間クライアントの差し替え**）。即時オーバーライド（デッドマン）を併設 | 自律走行 |
+
+**落とし穴（先に潰しておく）**
+
+- **同期が全て**: カメラ（`header.stamp`）と `/cmd_norm`（`header.stamp`）を同一 Pi クロックで取り、後処理で固定 Hz にリサンプルして「最新フレーム × その時有効だった行動」を対にする。ブラウザ側ではログしない（時計ズレを持ち込む）。
+- **分布ズレ / 雪だるま誤差**: 上手い走行だけ集めると、本番でわずかにズレた瞬間に未知の状態へ入って破綻する。Phase 4 のリカバリ走行が成功率を左右する。
+- **遅延**: オフボード推論のネットワーク往復は、ACT の**アクションチャンク**（先の数ステップをまとめて予測してオープンループ実行）で隠せる。
+- **解像度**: teleop 配信は 320x240 だが、学習用にはキャプチャ解像度を上げてもよい（配信と収集の解像度は分離できる）。
+
+**モデルの選択（参考）**: 今回は**ルートが単一挙動で言語条件付けが不要**なので **ACT が本命**（軽く・速い・2 自由度に十分）。言語でルートを指定したくなったら、同じデータのまま **SmolVLA**（軽量 VLA）等へ載せ替えできる。基盤がモデル非依存なのが Phase 1–3 の狙い。
 
 ---
 
@@ -868,6 +922,7 @@ PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` �
 │       ├── kuas_mechlab3/    # パッケージ本体（Python ソース）
 │       │   ├── __init__.py
 │       │   ├── utils.py      # 純 Python のヘルパー（例: clamp）
+│       │   ├── recording.py  # 純: 録画エピソードの配置 / メタデータ・スキーマ
 │       │   ├── drive/        # ML3 ドライブトレイン（下記「ドライブトレイン」参照）
 │       │   │   ├── kinematics.py       # 純: Twist→4輪ミキシング
 │       │   │   ├── protocol.py         # 純: ワイヤ形式 / テレメトリ解析
@@ -895,6 +950,8 @@ PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` �
 │   ├── start-all.sh          # driver + カメラ + teleop を一発起動（Ctrl+C で一括停止）
 │   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
 │   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
+│   ├── start-record.sh       # デモ走行を rosbag 録画（模倣学習データ収集）
+│   ├── record_episodes.py    # 上の中身: エピソード録画ループ（subprocess=ros2 bag）
 │   ├── lib-ros-env.sh        # 上記が source する共通 ROS 環境セットアップ
 │   ├── pi-jog.py             # per-wheel 方向検証（ROS 非依存・pyserial のみ）
 │   └── pi-drivetest.py       # 4 輪まとめ駆動テスト（同上）

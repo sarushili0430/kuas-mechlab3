@@ -2,7 +2,11 @@
 
 import pytest
 
-from kuas_mechlab3.drive.teleop_command import command_to_twist, parse_command
+from kuas_mechlab3.drive.teleop_command import (
+    command_to_norm,
+    command_to_twist,
+    parse_command,
+)
 
 MAX_LINEAR = 0.5
 MAX_ANGULAR = 2.0
@@ -86,3 +90,23 @@ def test_command_to_twist_deadzone_keeps_large_input() -> None:
 def test_command_to_twist_default_deadzone_keeps_tiny_input() -> None:
     # default deadzone=0 must not zero a genuine small command
     assert _twist(0.01, 0.0) == pytest.approx((0.005, 0.0))
+
+
+# -- command_to_norm --------------------------------------------------------
+
+
+def test_command_to_norm_passes_through_in_range() -> None:
+    assert command_to_norm(0.5, -0.3) == pytest.approx((0.5, -0.3))
+
+
+def test_command_to_norm_clamps_out_of_range() -> None:
+    assert command_to_norm(2.0, -3.0) == pytest.approx((1.0, -1.0))
+
+
+def test_command_to_norm_keeps_small_input_no_deadzone() -> None:
+    # the action label is the raw intent; deadzone is a downstream safety filter
+    assert command_to_norm(0.01, -0.02) == pytest.approx((0.01, -0.02))
+
+
+def test_command_to_norm_zero_is_zero() -> None:
+    assert command_to_norm(0.0, 0.0) == pytest.approx((0.0, 0.0))
