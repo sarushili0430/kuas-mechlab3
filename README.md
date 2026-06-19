@@ -808,6 +808,54 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 
 各ターミナルで `Ctrl+C`（teleop は終了時に自動で停止指令を送る）。
 
+#### 一発起動スクリプト（`scripts/`）
+
+上の「ターミナルごとに `source` してから launch を 1 つずつ」を、スクリプト 1 発に置き換えたもの。`source`（ROS2 本体 + `install/setup.bash`）・`ROS_DOMAIN_ID` の設定はスクリプト内でやるので、**素の新しいターミナルでそのまま実行してよい**（事前 `source` 不要）。前提は手動手順と同じ（`colcon build` 済み・`/dev/ttyACM0` と前後カメラが見える）。
+
+| スクリプト | 起動するもの | 待ち受け |
+| --- | --- | --- |
+| `scripts/start-teleop.sh` | テレオプ WebSocket ブリッジ（`teleop_launch.py`） | `ws://<ラズパイのIP>:9001` |
+| `scripts/start-cameras.sh` | 前後カメラ + MJPEG 配信（`cameras_launch.py`） | `http://<ラズパイのIP>:8080/` |
+| `scripts/start-all.sh` | driver + カメラ + teleop を 1 プロセスで束ねて起動 | 上記の両方 |
+| `scripts/lib-ros-env.sh` | 共通の環境セットアップ（各スクリプトが `source` する。直接は実行しない） | — |
+
+共通の上書き用環境変数（どのスクリプトでも効く）:
+
+| 環境変数 | 既定値 | 意味 |
+| --- | --- | --- |
+| `ROS_DOMAIN_ID` | `11` | DDS ドメイン。**PC 側で別ノードを動かすなら合わせる**（手動手順と同じ） |
+| `ROS_SETUP` | `/opt/ros/humble/setup.bash` | ROS2 本体の `setup.bash`。Humble 以外を使うとき用 |
+
+**`scripts/start-teleop.sh`** — テレオプだけ（driver もカメラも既に動いている時に、ブリッジだけ立て直したい等）。
+
+```bash
+./scripts/start-teleop.sh
+# launch 引数はそのまま渡せる（teleop_launch.py の DeclareLaunchArgument）:
+./scripts/start-teleop.sh port:=9001 max_linear:=0.5 max_angular:=2.0
+```
+
+**`scripts/start-cameras.sh`** — カメラ + 映像配信だけ。device は環境変数で、その他は launch 引数で渡す。
+
+```bash
+./scripts/start-cameras.sh
+# 前後カメラの device を変える（既定は front=/dev/video0 rear=/dev/video2。ls /dev/video* で確認）:
+FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-cameras.sh
+# 解像度・FPS は launch 引数で:
+./scripts/start-cameras.sh width:=640 height:=480 fps:=15.0 stream_fps:=15.0
+```
+
+**`scripts/start-all.sh`** — driver + カメラ + teleop を 1 発。3 つを束ねて起動し、**`Ctrl+C` で全ノードへ停止指令を送ってまとめて落とす**。実機オペレーションの通常運用はこれ 1 本でよい。
+
+```bash
+./scripts/start-all.sh
+# カメラ device の上書きはそのまま効く:
+FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-all.sh
+```
+
+> `start-all.sh` は 3 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。値を変えたいときは各 launch ファイルの既定値を直すか、`start-teleop.sh` / `start-cameras.sh` を個別に使う。
+
+PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` を開くだけ）。映像だけなら `http://<ラズパイのIP>:8080/` を直接開く。
+
 ---
 
 ## ディレクトリ構成
@@ -843,7 +891,13 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 ├── firmware/
 │   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
 ├── docs/                     # 補足ドキュメント（teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
-├── scripts/                  # bring-up 用スクリプト（pi-jog.py / pi-drivetest.py、ROS 非依存・pyserial のみ）
+├── scripts/                  # bring-up 用スクリプト
+│   ├── start-all.sh          # driver + カメラ + teleop を一発起動（Ctrl+C で一括停止）
+│   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
+│   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
+│   ├── lib-ros-env.sh        # 上記が source する共通 ROS 環境セットアップ
+│   ├── pi-jog.py             # per-wheel 方向検証（ROS 非依存・pyserial のみ）
+│   └── pi-drivetest.py       # 4 輪まとめ駆動テスト（同上）
 ├── .python-version           # Python のバージョン固定（3.10.18）
 ├── pyproject.toml            # black / mypy / pytest / coverage / commitizen 設定
 ├── requirements.txt          # 純 Python のランタイム依存
