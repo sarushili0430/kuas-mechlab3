@@ -885,7 +885,7 @@ PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` �
 
 固定ルートを人間のテレオプで走らせ、その **(映像, 操作) ログ**から視覚運動ポリシー（ACT / VLA 等）を**模倣学習**し、最終的に **AI が人間と同じ WebSocket スロットから `{"vx","wz"}` を出して全自動運転する**ところまでの段取り。要は **AI は人間のテレオプ・クライアントを「差し替える」だけ**で、`teleop_server` 以降（`cmd_vel` → `mbed_driver` → mbed → 安全機構）には一切手を入れない。
 
-> 📋 **AI 向けのフェーズ別・詳細な実行計画は [`docs/autonomy-plan.md`](./docs/autonomy-plan.md)**。本節はその俯瞰。
+> 📋 **AI 向けのフェーズ別・詳細な実行計画は [`docs/autonomy-plan.md`](./docs/autonomy-plan.md)**。本節はその俯瞰。**学習・推論の AI 部分は別リポ（`mechlab3-policy` 想定・ROS 非依存）**に分け、本リポは Pi 側・データ収集・契約（schema / WS プロトコル）を担当する。
 
 **設計の要（なぜこの形か）**
 

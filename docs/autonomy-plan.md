@@ -4,6 +4,7 @@
 
 - 高レベルの俯瞰: README「自律化ロードマップ」。本書はその**実行詳細**。
 - 設計の核: **両方向（ACT ゼロ学習 / SmolVLA finetune）を同じデータで開けておく**。共通基盤は **LeRobot データセット形式**。モデルは Phase 5 で 1 フラグ切替。
+- **構成: 2 リポ** — ロボット（本リポ・ROS）と AI（別リポ・ROS 非依存）。境界は契約のみ（下記「リポジトリ構成（2 リポ）」）。
 
 ---
 
@@ -22,6 +23,24 @@
 推論時:  [PC]  policy(映像) ──WS {vx,wz}──────────────────────> [Pi] teleop_server ─> cmd_vel ─> mbed
               （人間部分をモデルに差し替えただけ。安全網はそのまま）
 ```
+
+---
+
+## 1.5 リポジトリ構成（2 リポ）
+
+AI（学習・推論）は**別リポジトリ**に分ける。両者は**データ/プロトコルの契約**でのみ繋がり、コード依存は無い。
+
+| リポ | 役割 | 依存 | 含むもの |
+| --- | --- | --- | --- |
+| **kuas-mechlab3**（本リポ）| ロボット本体・データ収集・契約の正本 | ROS2 Humble・軽量 | Pi 側 ROS 一式、`/cmd_norm`、録画基盤、`recording.py`(schema)、本計画書 |
+| **mechlab3-policy**（新規・想定名）| 学習・推論 | torch / lerobot / `rosbags` / `websockets`（**ROS 非依存**）| Phase 3 変換、Phase 5 学習、Phase 7 policy-runner、checkpoints |
+
+**契約（これだけが境界）**:
+- データ受け渡し: `datasets/raw/*/{bag, meta.json}`（schema = §3 / `recording.py`）。AI 側は `rosbags` で読む（**ROS 不要**）。
+- 制御: WS `{"vx","wz"}` → `ws://<pi>:9001`（README teleop 節 / `docs/teleop-client.md`）。AI 側は `websockets` で送る。
+- データセット本体は git に入れず **HF Hub or 共有ストレージ**で受け渡す。
+
+→ GPU 機に ROS を入れる必要が無く、重い torch 依存が本リポの軽量 CI / `mypy --strict` / Pi 環境を汚さない。
 
 ---
 
@@ -63,6 +82,8 @@
 
 各フェーズ: **目的 / 入力 / 出力 / 手順 / 受け入れ基準 / 落とし穴**。
 
+> **Phase 3 / 5 / 7 は AI リポ `mechlab3-policy` で実施**（Phase 4・Pi 側・契約は本リポ）。以下の `scripts/...` 表記は AI リポ内のパスと読み替える。
+
 ### Phase 3 — bag → LeRobot データセット変換 ⬜（次の着手点）
 
 - **目的**: `datasets/raw/*/bag` を LeRobot 形式（`datasets/lerobot/<name>`）へ変換。
@@ -70,7 +91,7 @@
 - **出力**: `LeRobotDataset`（parquet + mp4 + meta）。`label=success` のみ採用（`failure/unlabeled` は除外、ただしフラグで残せると良い）。
 - **手順**:
   1. 依存: `lerobot`, `rosbags`（ROS 無しで bag を読める Python ライブラリ。dev PC で動く）, `opencv-python`, `av`。
-  2. 新規 `scripts/convert_to_lerobot.py`（IO）+ 純ロジックは `kuas_mechlab3` 内の新モジュール（同期・リサンプルのロジックは pytest 対象に切り出す）。
+  2. **AI リポ**の `convert_to_lerobot.py`（IO）。同期・リサンプルの純ロジックは AI リポ内のモジュールへ切り出し pytest 対象にする（本 ROS リポには置かない）。
   3. bag から `/cmd_norm`（stamp 付き）, 前後カメラ `CompressedImage`（JPEG, stamp 付き）を読む。
   4. **時刻同期**: `/cmd_norm` の `header.stamp` を基準に 10Hz グリッドを作り、各 tick で「**その時刻以前で最新の**カメラフレーム」と「その tick の行動」を対にする（未来フレームを覗かない）。
   5. `observation.state` = 直前 tick の `action`（先頭は `[0,0]`）。`task` = 定数文字列。
@@ -120,7 +141,7 @@
 ### Phase 7 — デプロイ（policy-runner）⬜
 
 - **目的**: PC 上で推論し WS 送信。**人間クライアントの差し替え**。
-- **新規 `scripts/policy_runner.py`**（IO）: 中身は「`teleop_ws_client` の人間入力をモデル推論に置換」。
+- **AI リポの `policy_runner.py`**（ROS 非依存。MJPEG 取得は `requests`/`cv2`、送信は `websockets`）: 中身は「`teleop_ws_client` の人間入力をモデル推論に置換」。
 - **入力**: 前カメラの MJPEG（`http://<pi>:8080/stream?topic=/front_camera/image_raw/compressed`）。ROS が PC にあるなら topic 購読でも可。
 - **ループ**:
   ```python
@@ -146,16 +167,25 @@
 ## 5. 予定する成果物 / 配置
 
 ```
-datasets/raw/                     # 録画した bag + meta.json（.gitignore 済み）
-datasets/lerobot/                 # Phase 3 の変換結果（.gitignore 済み）
-scripts/convert_to_lerobot.py     # Phase 3（IO）
-scripts/policy_runner.py          # Phase 7（IO）
-src/kuas_mechlab3/kuas_mechlab3/  # 同期/リサンプル等の純ロジック新モジュール（+ test/）
+# kuas-mechlab3（本リポ・ROS）
+datasets/raw/                     # 録画した bag + meta.json（.gitignore 済み。AI リポへ渡す素材）
+docs/autonomy-plan.md             # 本計画書（契約の正本）
+
+# mechlab3-policy（AI リポ・ROS 非依存・torch / lerobot）
+pyproject.toml                    # 依存: torch, lerobot, rosbags, websockets, opencv-python, av
+convert_to_lerobot.py             # Phase 3（bag + meta → LeRobot 形式）
+src/.../sync.py  (+ tests)        # 同期 / リサンプルの純ロジック（pytest）
+policy_runner.py                  # Phase 7（映像 → policy → WS {vx,wz}）
+train/                            # Phase 5 の学習設定・起動
+outputs/checkpoints/              # 学習済みモデル（git 非追跡）
+datasets/lerobot/                 # Phase 3 出力（git 非追跡。or HF Hub）
 ```
 
 ---
 
 ## 6. 実装規約（AI が必ず従うこと）
+
+> 下記は**本リポ（ROS）**の規約。**AI リポ**は ROS 非依存の独立プロジェクトで、自前の規約（torch 系の lint / test、`package.xml` 無し）を持つ。両リポ共通なのは「**責任の分離**」「Conventional Commits」「契約（§3）の遵守」。
 
 - **責任の分離を実装ごとに確認する**（リポジトリ全体の方針）。純ロジック = `kuas_mechlab3` パッケージ内 + `pytest`、ROS / I/O / subprocess = ノードや `scripts/` + colcon・手動。既存の `teleop_command`(純) vs `teleop_server`(ROS)、`recording`(純) vs `record_episodes.py`(IO) と同じ切り分けを踏襲。
 - **Lint ゲート**（lefthook の pre-commit で自動実行）: `black`（line 88）/ `mypy --strict` / `pytest`。コミット前に全部緑にする。`mypy` は `files = src/kuas_mechlab3/{kuas_mechlab3,test}` のみ対象（`scripts/` は対象外だが `black` は効く）。
