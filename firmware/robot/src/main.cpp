@@ -27,7 +27,7 @@ static const int DIR[4] = {-1, +1, -1, +1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
-static const int   PWM_CAP      = 1500;   // ≈37.5%。突入電流・速度を抑える上限
+static const int   PWM_CAP      = 2500;   // ≈62.5%。突入電流・速度を抑える上限
 static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
 static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
 static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz

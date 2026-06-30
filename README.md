@@ -271,11 +271,11 @@ ros2 run kuas_mechlab3 teleop_keyboard
 | 方向 | 形式 | 例 |
 | --- | --- | --- |
 | Pi → Nucleo（指令） | `s1/s2/s3/s4/d`（float 4 つを `/` 区切り、終端は文字 `d`。改行なし） | `10.50/10.50/-10.50/-10.50/d` |
-| Nucleo → Pi（テレメトリ） | `sp .. \| rpm .. \| pwm ..` を 1 行ずつ（改行区切り） | `sp 10.50 10.50 0.00 0.00 \| rpm 0.00 0.00 0.00 0.00 \| pwm 1500 1500 0 0` |
+| Nucleo → Pi（テレメトリ） | `sp .. \| rpm .. \| pwm ..` を 1 行ずつ（改行区切り） | `sp 10.50 10.50 0.00 0.00 \| rpm 0.00 0.00 0.00 0.00 \| pwm 2500 2500 0 0` |
 
 - ボーレート **115200**、ST-Link の USB シリアル（`/dev/ttyACM0`）を使う。
 - 車輪の対応（公称）は `s1=FL / s2=BL / s3=FR / s4=BR`（`kinematics.py` と同じ）。スキッドステアでは **左側=s1,s2 / 右側=s3,s4** のグルーピングだけが効くので、各輪の前進向きはファーム側の符号 `DIR[4]`（`main.cpp`）で吸収する。2026-06-16 のジョグ試験で `DIR={-1,+1,-1,+1}` と確定（実機物理コーナーは ch0=後左, ch1=前左, ch2=後右, ch3=前右）。1 輪が逆回転するときは該当 `DIR[i]` を反転して再フラッシュ（下記「モーターアライメント検証」）。
-- setpoint のフルスケールは **±10.5**（Pi 側の `wheel_setpoint` 既定値と揃える）。エンコーダ不動のため**オープンループ**で、`|sp|=10.5` を `PWM_CAP=1500`（分母 4000 ≈ 37.5%）の PWM に直結する。
+- setpoint のフルスケールは **±10.5**（Pi 側の `wheel_setpoint` 既定値と揃える）。エンコーダ不動のため**オープンループ**で、`|sp|=10.5` を `PWM_CAP=2500`（分母 4000 ≈ 62.5%）の PWM に直結する。
 - **ファーム側ウォッチドッグ入り**: 指令が 0.5 秒途絶える（USB 抜け・Pi 側クラッシュ含む）と全輪停止する。
 
 ### ピン割当（Tomoe-11 配線）
@@ -356,7 +356,7 @@ static const int DIR[4] = {-1, +1, -1, +1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
-static const int   PWM_CAP      = 1500;   // ≈37.5%。突入電流・速度を抑える上限
+static const int   PWM_CAP      = 2500;   // ≈62.5%。突入電流・速度を抑える上限
 static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
 static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
 static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz
@@ -505,7 +505,7 @@ python3 scripts/pi-drivetest.py forward     # backward | left | right | stop
 
 配線済みの ML3 を Raspberry Pi（ROS2 Humble）から**設定 〜 デモ走行**まで動かす手順。**確認は必ず車輪を浮かせて**から行うこと（全開 PWM で台から飛び出す・突入電流が出る）。
 
-> **前提**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に上の「**Nucleo ファームウェア（mbed）**」を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=1500` ≈ 37.5%）で動く。
+> **前提**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に上の「**Nucleo ファームウェア（mbed）**」を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=2500` ≈ 62.5%）で動く。
 
 ### 1. Pi の config
 

@@ -32,8 +32,8 @@ class TeleopKeyboard(Node):  # type: ignore[misc]
     def __init__(self) -> None:
         """Declare parameters and start the publish/poll timer."""
         super().__init__("teleop_keyboard")
-        self.declare_parameter("linear_speed", 0.4)
-        self.declare_parameter("angular_speed", 1.5)
+        self.declare_parameter("linear_speed", 0.5)
+        self.declare_parameter("angular_speed", 2.0)
         self.declare_parameter("hold_timeout", 0.4)
         self.declare_parameter("publish_rate", 20.0)
 
