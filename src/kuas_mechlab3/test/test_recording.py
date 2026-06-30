@@ -5,11 +5,15 @@ from datetime import datetime
 from kuas_mechlab3.recording import (
     ACTION_TOPIC,
     IMAGE_TOPICS,
+    RECORD_ACTIONS,
+    RecordCommand,
     build_metadata,
     default_topics,
     episode_dirname,
     format_duration,
     normalize_label,
+    parse_record_command,
+    record_command_to_json,
     slugify,
 )
 
@@ -118,3 +122,94 @@ def test_build_metadata_rejects_bogus_label() -> None:
 def test_format_duration_minutes_seconds() -> None:
     assert format_duration(34) == "0:34"
     assert format_duration(95) == "1:35"
+
+
+# -- parse_record_command ---------------------------------------------------
+
+
+def test_parse_record_command_start_minimal() -> None:
+    assert parse_record_command('{"record": "start"}') == RecordCommand(action="start")
+
+
+def test_parse_record_command_start_with_overrides() -> None:
+    cmd = parse_record_command(
+        '{"record": "start", "route": "Loop 2", "operator": "koyu"}'
+    )
+    assert cmd == RecordCommand(action="start", route="Loop 2", operator="koyu")
+
+
+def test_parse_record_command_stop_with_label_and_notes() -> None:
+    cmd = parse_record_command(
+        '{"record": "stop", "label": "f", "notes": "  drifted "}'
+    )
+    # label is normalised (f -> failure) and notes trimmed
+    assert cmd == RecordCommand(action="stop", label="failure", notes="drifted")
+
+
+def test_parse_record_command_stop_without_label_leaves_none() -> None:
+    # absent label stays None so the recorder applies its own default (not success)
+    assert parse_record_command('{"record": "stop"}') == RecordCommand(action="stop")
+
+
+def test_parse_record_command_action_is_case_insensitive() -> None:
+    assert parse_record_command('{"record": "STOP"}') == RecordCommand(action="stop")
+
+
+def test_parse_record_command_all_actions_supported() -> None:
+    for action in RECORD_ACTIONS:
+        parsed = parse_record_command(f'{{"record": "{action}"}}')
+        assert parsed is not None and parsed.action == action
+
+
+def test_parse_record_command_unknown_action_returns_none() -> None:
+    assert parse_record_command('{"record": "pause"}') is None
+
+
+def test_parse_record_command_drive_message_returns_none() -> None:
+    # a {"vx","wz"} drive command has no record key -> not a record command
+    assert parse_record_command('{"vx": 0.5, "wz": -0.3}') is None
+
+
+def test_parse_record_command_ignores_extra_keys() -> None:
+    cmd = parse_record_command('{"record": "start", "seq": 7}')
+    assert cmd == RecordCommand(action="start")
+
+
+def test_parse_record_command_blank_overrides_become_none() -> None:
+    cmd = parse_record_command('{"record": "start", "route": "   ", "operator": ""}')
+    assert cmd == RecordCommand(action="start", route=None, operator=None)
+
+
+def test_parse_record_command_bad_json_returns_none() -> None:
+    assert parse_record_command("{not json") is None
+    assert parse_record_command("") is None
+
+
+def test_parse_record_command_non_object_returns_none() -> None:
+    assert parse_record_command('"start"') is None
+    assert parse_record_command("[1, 2]") is None
+
+
+def test_parse_record_command_non_string_action_returns_none() -> None:
+    assert parse_record_command('{"record": 1}') is None
+
+
+# -- record_command_to_json (round-trip) ------------------------------------
+
+
+def test_record_command_to_json_omits_unset_fields() -> None:
+    assert (
+        record_command_to_json(RecordCommand(action="start")) == '{"record": "start"}'
+    )
+
+
+def test_record_command_to_json_round_trips_full_command() -> None:
+    cmd = RecordCommand(
+        action="stop", route="route-a", operator="koyu", label="success", notes="clear"
+    )
+    assert parse_record_command(record_command_to_json(cmd)) == cmd
+
+
+def test_record_command_to_json_round_trips_start_overrides() -> None:
+    cmd = RecordCommand(action="start", route="loop-2", operator="rin")
+    assert parse_record_command(record_command_to_json(cmd)) == cmd

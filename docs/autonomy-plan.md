@@ -13,9 +13,11 @@
 **ゴール**: 固定ルートを、PC 上のポリシーが前カメラ映像から `(vx, wz)` を生成し、`ws://<pi>:9001` に流して完走する。
 
 **不変条件（ここは絶対に変えない）**:
-- WS 境界 = `ws://<pi>:9001`、メッセージ `{"vx": <-1..1>, "wz": <-1..1>}`。**人間もモデルも同じスロットを埋める**。
+- WS 境界 = `ws://<pi>:9001`、**ドライブ指令** `{"vx": <-1..1>, "wz": <-1..1>}`。**人間もモデルも同じスロットを埋める**。
 - Pi 側（`teleop_server` → `cmd_vel` → `mbed_driver` → mbed、および 3 層の安全網）は**無変更**。モデルは「人間のテレオプ・クライアントの差し替え」でしかない。
 - 学習ターゲット = `/cmd_norm`（WS 境界の正規化指令そのもの）。→ 学習と推論の出力空間が一致。
+
+> 補足: 同じ WS には**録画制御** `{"record": …}` という別メッセージも乗る（収集時のみ。`teleop_server` が `/record_cmd` に中継し `episode_recorder` が記録）。これは上の不変条件に**直交**——ドライブの `{vx,wz}` スロット・`cmd_vel`・安全網には一切触れず、推論時のモデルは送らない。だからモデル＝人間クライアント差し替えという図式は不変。
 
 ```
 収集時:  [人間] cockpit.html / teleop_ws_client ──WS {vx,wz}──> [Pi] teleop_server ─> cmd_vel ─> mbed
@@ -50,7 +52,7 @@ AI（学習・推論）は**別リポジトリ**に分ける。両者は**デー
 | --- | --- |
 | 行動の publish | `teleop_server` が `/cmd_norm`（`geometry_msgs/TwistStamped`, vx=linear.x / wz=angular.z, [-1,1], ノードクロックの時刻付き）を `publish_rate`（20Hz）で出す |
 | 正規化ロジック | `kuas_mechlab3.drive.teleop_command.command_to_norm`（純・pytest）。デッドゾーン前の生の意図 |
-| エピソード録画 | `scripts/start-record.sh` → `scripts/record_episodes.py`（IO）+ `kuas_mechlab3.recording`（純・配置/スキーマ） |
+| エピソード録画 | 2 経路: **遠隔**＝`episode_recorder`（ROSノード）← `/record_cmd`（`teleop_server` が WS の録画指令を中継、コックピットのボタンで開始/停止）、**対話**＝`scripts/record_episodes.py`（stdin）。配置/スキーマ＝`kuas_mechlab3.recording`（純）、`ros2 bag`+`meta.json` IO＝`kuas_mechlab3.episode_session`（共通） |
 | 録画の出力 | `datasets/raw/<日時>_<route>_NNN/` に `bag/`（rosbag2）+ `meta.json` |
 
 **`meta.json` のスキーマ**（`kuas_mechlab3.recording.build_metadata`、`schema_version=1`）:
@@ -105,7 +107,8 @@ AI（学習・推論）は**別リポジトリ**に分ける。両者は**デー
 ### Phase 4 — データ収集（実走行）⬜
 
 - **目的**: 学習に足る**量と多様性**を集める。
-- **手順**: 別ターミナルで `scripts/start-all.sh`（driver+カメラ+teleop）→ `scripts/start-record.sh --route <r> --operator <name>`。`[Enter]` 開始 → 走る → `[Enter]` 保存（成功/失敗）/ `d` 破棄。
+- **手順（推奨・遠隔）**: `scripts/start-all.sh`（driver+カメラ+teleop+`episode_recorder` 同梱）→ コックピット（`docs/cockpit.html`）の ［● 録画開始］→ 走る →［■ 成功で保存 / ■ 失敗で保存］/［✗ 破棄］。操縦と同じ画面で完結し Pi 側ターミナル不要。route/operator はコックピットの欄か `RECORD_ROUTE`/`RECORD_OPERATOR` で。
+- **手順（対話・別法）**: driver+カメラ+teleop を起動後、別ターミナルで `scripts/start-record.sh --route <r> --operator <name>`。`[Enter]` 開始 → 走る → `[Enter]` 保存（成功/失敗）/ `d` 破棄。遠隔と**同時併用しない**（二重録画）。
 - **多様性**: 照明・時間帯・開始位置・人や障害物の有無を散らす。**リカバリ走行（わざとコースから外して戻す）を 2〜3 割混ぜる**（分布ズレ＝雪だるま誤差の対策。ここが成功率を左右する）。
 - **量の目安**: 1 ルート **20〜50 本**（成功ラベル）。失敗は分析用に `label=failure` で残すか破棄。
 - **受け入れ基準**: success エピソード数・総時間・リカバリ走行の割合を記録（`meta.json` から集計できる）。

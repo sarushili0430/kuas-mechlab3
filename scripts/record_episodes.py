@@ -18,15 +18,14 @@ install/setup.bash を既に source 済みのシェルから直接:
 """
 
 import argparse
-import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from kuas_mechlab3.episode_session import start_bag, stop_bag, write_meta
 from kuas_mechlab3.recording import (
     build_metadata,
     default_topics,
@@ -68,34 +67,6 @@ def _prompt(message: str) -> str:
         return input(message)
     except EOFError:
         return "q"
-
-
-def start_bag(bag_dir: Path, topics: list[str], storage: str) -> subprocess.Popen:
-    """Launch ``ros2 bag record`` into bag_dir in its own session.
-
-    ``start_new_session`` detaches it from the terminal's Ctrl-C so this script
-    alone controls its lifecycle (a clean SIGINT lets rosbag2 finalise the bag).
-    """
-    cmd = ["ros2", "bag", "record", "-o", str(bag_dir), "-s", storage, *topics]
-    return subprocess.Popen(cmd, start_new_session=True)
-
-
-def stop_bag(proc: subprocess.Popen) -> None:
-    """SIGINT the recorder so rosbag2 closes the bag cleanly, then wait it out."""
-    if proc.poll() is None:
-        proc.send_signal(signal.SIGINT)
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            proc.wait(timeout=5)
-
-
-def _write_meta(ep_dir: Path, meta: dict) -> None:
-    """Write the episode metadata sidecar next to its bag."""
-    (ep_dir / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -154,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                 _prompt(f"  ラベル [Enter]=成功 / f=失敗（録画 {dur}）> ")
             )
             notes = _prompt("  メモ（任意, Enter でスキップ）> ").strip()
-            _write_meta(
+            write_meta(
                 ep_dir,
                 build_metadata(
                     route=args.route,
@@ -183,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             stop_bag(proc)
             if ep_dir is not None and started is not None:
                 stopped = datetime.now()
-                _write_meta(
+                write_meta(
                     ep_dir,
                     build_metadata(
                         route=args.route,

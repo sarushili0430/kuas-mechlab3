@@ -16,7 +16,7 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-websockets</exec_depend>
   <exec_depend>ros2launch</exec_depend>
-  <!-- record_episodes.py が ros2 bag record でデモ走行を記録するため -->
+  <!-- record_episodes.py / episode_recorder が ros2 bag record でデモ走行を記録するため -->
   <exec_depend>ros2bag</exec_depend>
   <exec_depend>rosbag2_storage_default_plugins</exec_depend>
 

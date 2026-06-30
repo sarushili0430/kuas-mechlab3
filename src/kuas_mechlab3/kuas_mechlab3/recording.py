@@ -8,8 +8,19 @@ operational script ``scripts/record_episodes.py`` owns the subprocess (ros2 bag)
 signal handling, and stdin; this module stays import-clean so the standalone
 pytest job can cover the naming and schema without a sourced ROS2 environment
 (same split as ``utils`` / ``teleop_command`` vs. the nodes).
+
+It also owns the *remote record-control protocol* (``parse_record_command`` /
+``record_command_to_json`` / ``RECORD_TOPIC``): the small JSON message the
+operator sends over the teleop WebSocket to start / stop / discard an episode.
+``teleop_server`` parses it (so the operator can drive recording from the same
+cockpit they steer from) and relays it on ``RECORD_TOPIC``; the ``episode_recorder``
+node consumes it and owns the bag lifecycle. Keeping the parse/serialise here --
+pure and pytest-covered -- mirrors ``teleop_command`` owning the drive-command
+wire format while ``teleop_server`` owns only the socket and the ROS publishing.
 """
 
+import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -35,6 +46,15 @@ STATE_TOPICS = (
 )
 
 VALID_LABELS = ("success", "failure", "unlabeled")
+
+# Relay topic for remote record control: teleop_server publishes the operator's
+# start/stop/discard command here (std_msgs/String, JSON payload) and the
+# episode_recorder node subscribes. Absolute so publisher and subscriber match
+# regardless of node namespace (same convention as ACTION_TOPIC above).
+RECORD_TOPIC = "/record_cmd"
+
+# The three things an operator can ask the recorder to do, mid-demo, from teleop.
+RECORD_ACTIONS = ("start", "stop", "discard")
 
 
 def slugify(text: str) -> str:
@@ -132,3 +152,87 @@ def format_duration(seconds: float) -> str:
     """Render seconds as ``M:SS`` for terse operator feedback."""
     whole = max(0, int(seconds))
     return f"{whole // 60}:{whole % 60:02d}"
+
+
+@dataclass(frozen=True)
+class RecordCommand:
+    """A normalised remote record-control command (one start / stop / discard).
+
+    ``action`` is one of ``RECORD_ACTIONS``. The rest are optional per-episode
+    overrides carried on the wire so the operator can label and tag a run without
+    a terminal on the Pi: ``route`` / ``operator`` refine a ``start``; ``label``
+    (already mapped to success/failure/unlabeled) and ``notes`` annotate a
+    ``stop``. ``None`` means "not supplied" -- the recorder fills its own default.
+    """
+
+    action: str
+    route: str | None = None
+    operator: str | None = None
+    label: str | None = None
+    notes: str = ""
+
+
+def _clean_optional_str(value: Any) -> str | None:
+    """Return a trimmed non-empty string, or None for anything else / blank."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def parse_record_command(raw: str) -> RecordCommand | None:
+    """Parse one record-control message into a normalised ``RecordCommand``.
+
+    Accepts ``{"record": "start"|"stop"|"discard", ...}`` (case-insensitive
+    action) with optional ``route`` / ``operator`` (start) and ``label`` /
+    ``notes`` (stop). ``label`` is mapped through ``normalize_label`` so a typo
+    never silently becomes a success; an absent label stays ``None`` so the
+    recorder can apply its own default. Returns ``None`` for anything that is not
+    a well-formed record command -- bad JSON, a non-object, a missing/unknown
+    ``record`` action -- so a caller multiplexing one socket can fall through to
+    the drive-command parser (a ``{"vx","wz"}`` message has no ``record`` key and
+    so returns ``None`` here; mirrors ``parse_command`` returning ``None`` for a
+    record message).
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    action_raw = data.get("record")
+    if not isinstance(action_raw, str):
+        return None
+    action = action_raw.strip().lower()
+    if action not in RECORD_ACTIONS:
+        return None
+    label_raw = data.get("label")
+    label = normalize_label(label_raw) if isinstance(label_raw, str) else None
+    return RecordCommand(
+        action=action,
+        route=_clean_optional_str(data.get("route")),
+        operator=_clean_optional_str(data.get("operator")),
+        label=label,
+        notes=_clean_optional_str(data.get("notes")) or "",
+    )
+
+
+def record_command_to_json(cmd: RecordCommand) -> str:
+    """Serialise a ``RecordCommand`` to the canonical relay JSON.
+
+    Drops fields left unset so the payload stays minimal, and round-trips through
+    ``parse_record_command`` unchanged. ``teleop_server`` relays this normalised
+    form on ``RECORD_TOPIC`` (rather than the operator's raw bytes) so the
+    recorder always receives a validated, already-normalised command.
+    """
+    payload: dict[str, str] = {"record": cmd.action}
+    if cmd.route is not None:
+        payload["route"] = cmd.route
+    if cmd.operator is not None:
+        payload["operator"] = cmd.operator
+    if cmd.label is not None:
+        payload["label"] = cmd.label
+    if cmd.notes:
+        payload["notes"] = cmd.notes
+    return json.dumps(payload, ensure_ascii=False)

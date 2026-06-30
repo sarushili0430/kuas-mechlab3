@@ -73,6 +73,11 @@ omit = [
     "*/camera/capture.py",
     "*/camera/camera_node.py",
     "*/camera/mjpeg_server.py",
+    # episode_session.py wraps the ros2 bag subprocess + meta.json IO and
+    # episode_recorder.py is an rclpy node -- both exercised by colcon / on the
+    # robot, not the standalone pytest job (same split as the nodes above).
+    "*/episode_session.py",
+    "*/episode_recorder.py",
 ]
 
 [tool.coverage.report]

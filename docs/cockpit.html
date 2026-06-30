@@ -7,8 +7,12 @@
     2) 下の  const PI = ... "192.168.1.42"  の IP をラズパイの IP に書き換えて保存
     3) ダブルクリックで開く（file://）。※ HTTPS 配信は混在コンテンツでブロックされる
     4) ページをクリックしてフォーカス → W/A/S/D で操縦（離す・閉じると停止）
+    5) 録画（データ取得）は下のボタンで: ［● 録画開始］→ ルートを走る →
+       ［■ 成功で保存 / ■ 失敗で保存］、失敗走行は［✗ 破棄］。同じ WS で指令を送り、
+       ラズパイ側の episode_recorder が 1 エピソード = 1 bag + meta.json で記録する。
 
   前提（ラズパイ側）: cameras_launch.py（:8080）と teleop_launch.py（:9001）が起動済み。
+  録画ボタンを使うなら episode_recorder（record_launch.py、または start-all.sh に同梱）も起動済み。
 -->
 <html lang="ja">
 <head>
@@ -19,6 +23,12 @@
     figure { display:inline-block; margin:8px }
     img { width:48vw; max-width:640px; border:1px solid #444; background:#000 }
     #status { padding:6px; font-weight:bold }
+    #rec { padding:8px; display:flex; gap:8px; justify-content:center; align-items:center; flex-wrap:wrap }
+    #rec button { padding:6px 10px; font-size:14px; cursor:pointer }
+    #rec button:disabled { opacity:.4; cursor:default }
+    #rec input { background:#222; color:#eee; border:1px solid #444; padding:3px }
+    #recstatus { font-weight:bold; min-width:7em }
+    #recstatus.on { color:#f55 }
   </style>
 </head>
 <body>
@@ -29,6 +39,17 @@
     <figure><figcaption>rear</figcaption><img id="rear" alt="rear"></figure>
   </div>
   <p>このページにフォーカスして <b>W/A/S/D</b> で操縦（離すと停止）</p>
+
+  <!-- 録画（データ取得）コントロール: 同じ WS に {"record":...} を送るだけ -->
+  <div id="rec">
+    <span id="recstatus">REC: idle</span>
+    <button id="recstart">● 録画開始</button>
+    <button id="recok" disabled>■ 成功で保存</button>
+    <button id="recng" disabled>■ 失敗で保存</button>
+    <button id="recdrop" disabled>✗ 破棄</button>
+    <label>route <input id="route" value="route_a" size="10"></label>
+    <label>operator <input id="operator" value="" size="8" placeholder="任意"></label>
+  </div>
 
   <script>
     // ★ ラズパイの IP に書き換える（file:// で開く場合は右の "192.168.1.42" を変更）
@@ -44,8 +65,10 @@
 
     // 2) 入力: 押下中のキー集合から目標軸を計算
     const keys = new Set();
-    addEventListener("keydown", e => keys.add(e.key.toLowerCase()));
-    addEventListener("keyup",   e => keys.delete(e.key.toLowerCase()));
+    // route/operator 入力欄にフォーカス中のキー入力は操縦に流さない（"a" 等で誤動作しない）
+    const isTyping = e => e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
+    addEventListener("keydown", e => { if (!isTyping(e)) keys.add(e.key.toLowerCase()); });
+    addEventListener("keyup",   e => { if (!isTyping(e)) keys.delete(e.key.toLowerCase()); });
     addEventListener("blur", () => keys.clear());   // ウィンドウ非アクティブで停止
     function currentAxes() {
       let vx = 0, wz = 0;
@@ -74,7 +97,41 @@
       }
     }, 1000 / RATE_HZ);
 
-    // 5) 離脱時に明示停止（サーバ側も切断で止まる）
+    // 5) 録画コントロール: 操縦と同じ WS に 1 発ずつ {"record":...} を送る。
+    //    teleop_server が /record_cmd に中継し、episode_recorder が bag を開始/停止する。
+    //    状態はクライアント側で見せるだけ（送れた時だけ反映）。
+    let recOn = false, recT0 = 0, recTick = null;
+    function sendRecord(obj) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) { recstatus.textContent = "REC: WS 未接続"; return false; }
+      ws.send(JSON.stringify(obj));
+      return true;
+    }
+    function paintRec() {
+      const s = Math.floor((Date.now() - recT0) / 1000);
+      recstatus.textContent = `● REC ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+    function setRec(on) {
+      recOn = on;
+      recstatus.classList.toggle("on", on);
+      recstart.disabled = on;
+      recok.disabled = recng.disabled = recdrop.disabled = !on;
+      if (on) { recT0 = Date.now(); paintRec(); recTick = setInterval(paintRec, 250); }
+      else { clearInterval(recTick); recTick = null; recstatus.textContent = "REC: idle"; }
+    }
+    const blur = el => el.blur();   // 押下後はボタンからフォーカスを外して WASD に戻す
+    recstart.onclick = () => {
+      const msg = { record: "start" };
+      if (route.value.trim())    msg.route = route.value.trim();
+      if (operator.value.trim()) msg.operator = operator.value.trim();
+      if (sendRecord(msg)) setRec(true);
+      blur(recstart);
+    };
+    recok.onclick   = () => { if (sendRecord({ record: "stop", label: "success" })) setRec(false); blur(recok); };
+    recng.onclick   = () => { if (sendRecord({ record: "stop", label: "failure" })) setRec(false); blur(recng); };
+    recdrop.onclick = () => { if (sendRecord({ record: "discard" }))                setRec(false); blur(recdrop); };
+
+    // 6) 離脱時に明示停止（サーバ側も切断で止まる）。録画は止めない（途中保存を避け、
+    //    操縦者の明示停止か episode_recorder のシャットダウン finalize に委ねる）。
     addEventListener("beforeunload", () => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ vx: 0, wz: 0 }));
     });

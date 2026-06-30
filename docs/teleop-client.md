@@ -103,6 +103,33 @@ function connect() {
 
 初版は **last-writer-wins**（最後に届いた指令が有効）で、接続が 0 になると停止する。**同時に操縦するのは 1 台**にする運用が安全（2 つのクライアントが別々の指令を送ると取り合いになる）。
 
+### 録画（データ取得）を同じ WS で開始・停止する
+
+操縦と**同じ WebSocket**に、ドライブ指令とは別の **record-control メッセージ**を 1 発送るだけで、データ取得（rosbag 録画）を**操縦画面のまま**開始・終了できる（Pi 側のターミナルに触れない）。`teleop_server` がこれを正規化して `/record_cmd`（`std_msgs/String`）に中継し、`episode_recorder` ノードが **1 エピソード = 1 bag + `meta.json`** で記録する。
+
+```js
+ws.send(JSON.stringify({ record: "start", route: "route_a", operator: "koyu" }));  // 録画開始
+ws.send(JSON.stringify({ record: "stop",  label: "success" }));                    // 保存（成功ラベル）
+ws.send(JSON.stringify({ record: "stop",  label: "failure", notes: "外れた" }));   // 保存（失敗 + メモ）
+ws.send(JSON.stringify({ record: "discard" }));                                    // 今の走行を破棄
+```
+
+| キー | 対象 | 値 | 既定 / 備考 |
+| --- | --- | --- | --- |
+| `record` | 全部 | `"start"` / `"stop"` / `"discard"`（大小文字無視） | 必須。これ以外は無視される |
+| `route` | start | 文字列 | 任意。エピソードのルート名（省略時はノードの既定 `route_a`） |
+| `operator` | start | 文字列 | 任意。操縦者名（省略時はノードの既定） |
+| `label` | stop | `"success"` / `"failure"` 等 | 任意。`normalize_label` で正規化。**省略すると `unlabeled`**（黙って成功にはしない） |
+| `notes` | stop | 文字列 | 任意。`meta.json` に残す自由メモ |
+
+- **ドライブ指令とは別物**: `{"vx","wz"}` には `record` キーが無く、record メッセージには `vx`/`wz` が無いので、1 本の WS で**混ざらない**。`teleop_server` はまずドライブとして解釈し、違えば record として解釈する（どちらでもなければ従来どおり黙って無視）。
+- **安全網と無関係**: record の中継は cmd_vel（Twist）と 3 層フェイルセーフに一切触れない。録画の有無に関わらず操縦の停止挙動は同じ。
+- **1 本ずつ**: record は連続ストリームではなく**単発イベント**（押した時だけ送る）。ドライブの 20Hz ハートビートに混ぜない。
+- **前提**: 録画には `episode_recorder` が起動済みであること（`ros2 launch kuas_mechlab3 record_launch.py`、または `start-all.sh` に同梱）。未起動なら record メッセージは中継されるが誰も受けず、何も記録されない。
+- **既に録画中の `start`／非録画中の `stop`・`discard`** は recorder 側で警告ログのみ・無視（多重 bag を作らない）。WS やタブを録画中に閉じても bag は止まらない（操縦者の明示 `stop`、または recorder シャットダウン時に `unlabeled` で finalize される）。
+
+> 同梱の [`cockpit.html`](./cockpit.html) には ［● 録画開始］［■ 成功で保存］［■ 失敗で保存］［✗ 破棄］のボタンと録画タイマーが付いており、上記メッセージをこの WS で送る。route / operator はテキスト欄で指定する。
+
 ---
 
 ## 3. ブラウザを使わない動作確認
@@ -115,6 +142,11 @@ echo '{"vx":0.5,"wz":0.0}' | websocat ws://<pi>:9001
 
 # 受信側で cmd_vel が出ているか確認（ROS2 環境）
 ros2 topic echo /cmd_vel
+
+# 録画の遠隔制御も同じ WS。開始/停止を 1 発ずつ送り、中継トピックを確認する
+echo '{"record":"start","route":"route_a"}' | websocat ws://<pi>:9001
+echo '{"record":"stop","label":"success"}'  | websocat ws://<pi>:9001
+ros2 topic echo /record_cmd                  # teleop_server -> episode_recorder の中継を確認
 
 # 同梱の WASD クライアント（rclpy 非依存。操縦者 PC で直接 python でも可）
 ros2 run kuas_mechlab3 teleop_ws_client --url ws://<pi>:9001
@@ -130,7 +162,7 @@ curl -s http://<pi>:8080/stream?topic=/front_camera/image_raw/compressed --outpu
 
 前後 2 カメラの `<img>` と、WASD を 20Hz で送る WebSocket を 1 枚にまとめた最小例。`PI` を Pi の IP に変えて、`http://` 配信か `file://` で開く（HTTPS は混在コンテンツでブロックされる）。フォーカスをこのページに当ててから WASD で操縦する。
 
-> 💾 **そのまま開ける実ファイルを [`cockpit.html`](./cockpit.html) に同梱**（リポジトリ同梱の正本）。下のリストは説明用の同一コピー。実際に使うときは `cockpit.html` を開く。
+> 💾 **そのまま開ける実ファイルを [`cockpit.html`](./cockpit.html) に同梱**（リポジトリ同梱の正本）。下のリストは**操縦コア部分**の説明用コピー。正本の `cockpit.html` には加えて**録画ボタン**（［● 録画開始］/［■ 成功で保存］/［■ 失敗で保存］/［✗ 破棄］と route/operator 欄、上の「録画を同じ WS で開始・停止する」を実装）が付く。実際に使うときは `cockpit.html` を開く。
 
 ```html
 <!doctype html>

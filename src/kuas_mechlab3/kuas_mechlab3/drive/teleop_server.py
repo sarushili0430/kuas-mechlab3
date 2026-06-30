@@ -27,23 +27,40 @@ tool can pair each action with the camera frame in effect at that instant. This 
 the action label for imitation-learning logs: a recorded human demonstration and a
 future autonomous policy occupy the same WebSocket slot, so this topic is exactly
 what the policy must learn to emit. It is publish-only -- recording is a separate
-concern (see ``scripts/record_episodes.py``).
+concern (see ``scripts/record_episodes.py`` / the ``episode_recorder`` node).
+
+The same WebSocket also carries *record-control* messages so the operator can
+start and stop data acquisition from the cockpit they steer from (instead of a
+separate terminal on the Pi). A ``{"record": "start"|"stop"|"discard", ...}``
+message is parsed by ``recording.parse_record_command`` and relayed verbatim --
+normalised -- on ``record_cmd`` (std_msgs/String) for the ``episode_recorder``
+node to act on. This is wholly independent of the drive path: it never touches
+the Twist or the three-layer failsafe, and (like every command here) it crosses
+the asyncio->ROS boundary through the lock-guarded ``CommandStore`` so the
+WebSocket thread still never touches rclpy.
 """
 
 import asyncio
 import threading
 import time
+from collections import deque
 from typing import Any
 
 import rclpy
 import websockets
 from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from kuas_mechlab3.drive.teleop_command import (
     command_to_norm,
     command_to_twist,
     parse_command,
+)
+from kuas_mechlab3.recording import (
+    RECORD_TOPIC,
+    parse_record_command,
+    record_command_to_json,
 )
 
 
@@ -62,6 +79,11 @@ class CommandStore:
         self._wz = 0.0
         self._stamp = 0.0
         self._clients = 0
+        # Pending record-control payloads (canonical JSON), set from the
+        # WebSocket thread and drained by the ROS timer. A queue, not a single
+        # slot: a quick start-then-stop must deliver both, in order, never
+        # coalesce. Distinct from the drive command, which is latest-wins.
+        self._records: deque[str] = deque()
 
     def set_command(self, vx: float, wz: float) -> None:
         """Replace the latest command and re-stamp it (WebSocket thread)."""
@@ -69,6 +91,18 @@ class CommandStore:
             self._vx = vx
             self._wz = wz
             self._stamp = time.monotonic()
+
+    def push_record(self, payload: str) -> None:
+        """Enqueue a record-control payload to relay (WebSocket thread)."""
+        with self._lock:
+            self._records.append(payload)
+
+    def drain_records(self) -> list[str]:
+        """Pop all pending record-control payloads in order (ROS thread)."""
+        with self._lock:
+            drained = list(self._records)
+            self._records.clear()
+            return drained
 
     def add_client(self) -> None:
         """Register a newly connected client."""
@@ -157,6 +191,13 @@ class _CommandWsServer:
                 parsed = parse_command(text)
                 if parsed is not None:
                     self._store.set_command(*parsed)
+                    continue
+                # Not a drive command -- maybe a record-control message. A drive
+                # message has no "record" key (and vice versa), so the two never
+                # collide; anything that is neither is ignored, as before.
+                record = parse_record_command(text)
+                if record is not None:
+                    self._store.push_record(record_command_to_json(record))
         except websockets.ConnectionClosed:
             pass
         finally:
@@ -200,6 +241,11 @@ class TeleopServer(Node):  # type: ignore[misc]
         # Normalised twin of cmd_vel for imitation-learning logs (the action a
         # policy must reproduce); stamped on the node clock for offline sync.
         self._norm_pub = self.create_publisher(TwistStamped, "cmd_norm", 10)
+        # Remote record control relayed to the episode_recorder node. Default
+        # (volatile) QoS on purpose: these are one-shot control events, so a late
+        # subscriber must NOT be replayed a stale "start". The recorder is brought
+        # up alongside this node, well before any operator record command.
+        self._record_pub = self.create_publisher(String, RECORD_TOPIC, 10)
 
         self._server = _CommandWsServer(
             host, port, self._store, ping_interval, ping_timeout
@@ -213,7 +259,9 @@ class TeleopServer(Node):  # type: ignore[misc]
 
     def _tick(self) -> None:
         """Publish the latest command on cmd_vel, plus its normalised twin on
-        cmd_norm for logging; both zero if the client is stale / unmanned."""
+        cmd_norm for logging; both zero if the client is stale / unmanned.
+        Also relay any pending record-control events (independent of the drive
+        path -- the failsafe below applies only to the Twist)."""
         vx_norm, wz_norm, age, has_client = self._store.snapshot()
         live = has_client and age <= self._hold_timeout
 
@@ -228,6 +276,17 @@ class TeleopServer(Node):  # type: ignore[misc]
             norm_vx, norm_wz = command_to_norm(vx_norm, wz_norm)
         self._pub.publish(twist)
         self._publish_norm(norm_vx, norm_wz)
+        self._relay_records()
+
+    def _relay_records(self) -> None:
+        """Publish any queued record-control payloads on record_cmd (ROS thread).
+
+        Drains the store's queue so a start-then-stop within one tick relays both
+        in order. A no-op when nothing is queued, so it costs a steady stream of
+        idle drive ticks essentially nothing."""
+        for payload in self._store.drain_records():
+            self._record_pub.publish(String(data=payload))
+            self.get_logger().info(f"record command relayed: {payload}")
 
     def _publish_norm(self, vx: float, wz: float) -> None:
         """Publish the normalised command (vx, wz in [-1, 1]) on cmd_norm, stamped
