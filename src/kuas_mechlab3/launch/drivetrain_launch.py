@@ -30,6 +30,11 @@ def generate_launch_description() -> LaunchDescription:
                         "wheel_setpoint": 10.5,
                         "turn_sign": 1.0,
                         "cmd_timeout": 0.4,
+                        # Servo (arm) angle->pulse calibration; DS3225 on TIM15.
+                        "servo_min_us": 500,
+                        "servo_max_us": 2500,
+                        "servo_min_deg": 0.0,
+                        "servo_max_deg": 180.0,
                     }
                 ],
             ),

@@ -7,7 +7,7 @@ so it can be unit-tested without a serial device. SerialLink is exercised by
 
 import serial
 
-from kuas_mechlab3.drive.protocol import format_setpoints
+from kuas_mechlab3.drive.protocol import format_servo_us, format_setpoints
 
 
 class SerialLink:
@@ -40,6 +40,16 @@ class SerialLink:
         if self._ser is None:
             raise RuntimeError("serial port is not open")
         self._ser.write(format_setpoints(s1, s2, s3, s4).encode())
+
+    def send_servo_us(self, us1: int, us2: int) -> None:
+        """Write one servo packet (pulse widths in µs) to the firmware.
+
+        Shares the port with ``send_setpoints`` but uses the separate 'a'-terminated
+        servo packet, so it never disturbs the 4-wheel drive stream.
+        """
+        if self._ser is None:
+            raise RuntimeError("serial port is not open")
+        self._ser.write(format_servo_us(us1, us2).encode())
 
     def read_pending(self) -> list[str]:
         """Return all telemetry lines currently buffered, without blocking long.

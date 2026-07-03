@@ -29,8 +29,20 @@ static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
 static const int   PWM_CAP      = 2500;   // ≈62.5%。突入電流・速度を抑える上限
 static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
-static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
+static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止（車輪のみ）
 static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz
+
+// ===== Servo（アーム）: DS3225 ×2 on TIM15（docs: robot-pinout-power-reference §1d）=====
+// 信号線のみ Nucleo（3.3 V パルスで駆動可）。V+/GND は専用サーボレール（§4）へ。
+// s1=shoulder PB_14_ALT0 TIM15_CH1 / s2=elbow PB_15_ALT1 TIM15_CH2。
+// 駆動パケット（終端 'd'）とは独立の別パケット（終端 'a'）で受ける。ホスト側の
+// 4 輪プロトコル（protocol.py / SerialLink.send_setpoints）は無改修のまま。
+static const PinName SERVO_PINS[2]   = {PB_14_ALT0, PB_15_ALT1};
+static const int     SERVO_COUNT     = 2;
+static const int     SERVO_PERIOD_US = 20000;  // 50 Hz
+static const int     SERVO_MIN_US    = 500;    // 安全下限（機械端の手前で飽和）
+static const int     SERVO_MAX_US    = 2500;   // 安全上限
+static const char    SERVO_EOP       = 'a';    // サーボ指令パケットの終端
 
 class L298NMotor {
 public:
@@ -56,6 +68,30 @@ private:
     int pwm_ = 0;
 };
 
+// 50 Hz の位置サーボ 1 本。PwmOut を pulsewidth で直接叩く（外部 Servo ライブラリ
+// 非依存）。起動時はパルス幅 0 = 無通電で、最初の指令が来るまでアームを動かさない。
+// 車輪と違いウォッチドッグでは中立化せず、最後に指令したパルスを保持し続ける
+// （指令が途切れてもアームがその場に留まる＝不意な動作を避ける）。
+class ServoOut {
+public:
+    explicit ServoOut(PinName pin) : pwm_(pin) {
+        pwm_.period_us(SERVO_PERIOD_US);
+        pwm_.pulsewidth_us(0);  // idle: 有効パルスなし
+    }
+    // us: SERVO_MIN_US..SERVO_MAX_US に飽和させてから出力（安全側の最終クランプ）。
+    void apply_us(int us) {
+        if (us < SERVO_MIN_US) us = SERVO_MIN_US;
+        if (us > SERVO_MAX_US) us = SERVO_MAX_US;
+        us_ = us;
+        pwm_.pulsewidth_us(us);
+    }
+    int us() const { return us_; }
+
+private:
+    PwmOut pwm_;
+    int us_ = 0;
+};
+
 static BufferedSerial pc(USBTX, USBRX, 115200);
 
 static int elapsed_ms(const Timer& t) {
@@ -69,6 +105,9 @@ int main() {
         L298NMotor(MOTOR_PINS[0]), L298NMotor(MOTOR_PINS[1]),
         L298NMotor(MOTOR_PINS[2]), L298NMotor(MOTOR_PINS[3]),
     };
+    ServoOut servos[SERVO_COUNT] = {
+        ServoOut(SERVO_PINS[0]), ServoOut(SERVO_PINS[1]),
+    };
     pc.set_blocking(false);
 
     float sp[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -79,7 +118,7 @@ int main() {
     tel_timer.start();
 
     while (true) {
-        // --- 受信: 終端 'd' までためて "s1/s2/s3/s4" をパース ---
+        // --- 受信: 終端 'd'=駆動 "s1/s2/s3/s4" / 'a'=サーボ "us1/us2" をパース ---
         char c;
         while (pc.read(&c, 1) == 1) {
             if (c == 'd') {
@@ -93,10 +132,27 @@ int main() {
                     cmd_timer.reset();
                 }
                 rx_len = 0;
+            } else if (c == SERVO_EOP) {
+                // サーボパケット: パルス幅 [µs] を 2 本。cmd_timer は触らない
+                // （サーボは車輪ウォッチドッグの対象外＝指令保持のため）。
+                rx[rx_len] = '\0';
+                int u[SERVO_COUNT];
+                if (sscanf(rx, "%d/%d", &u[0], &u[1]) == SERVO_COUNT) {
+                    for (int i = 0; i < SERVO_COUNT; i++) {
+                        servos[i].apply_us(u[i]);
+                    }
+                    // 受領確認（開ループなので唯一の手掛かり）。'rpm'/'pwm' を含まない
+                    // ので Pi 側 parse_telemetry は無視し、駆動テレメトリと干渉しない。
+                    char ack[40];
+                    int n = snprintf(ack, sizeof(ack), "srv %d %d\n",
+                                     servos[0].us(), servos[1].us());
+                    pc.write(ack, n);
+                }
+                rx_len = 0;
             } else if (rx_len < sizeof(rx) - 1) {
                 rx[rx_len++] = c;
             } else {
-                rx_len = 0;  // 壊れたパケットは捨てて次の 'd' で再同期
+                rx_len = 0;  // 壊れたパケットは捨てて次の終端で再同期
             }
         }
 
