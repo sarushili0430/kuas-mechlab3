@@ -59,3 +59,18 @@ def command_to_twist(
     if abs(wz) < deadzone:
         wz = 0.0
     return vx * max_linear, wz * max_angular
+
+
+def command_to_norm(vx_norm: float, wz_norm: float) -> tuple[float, float]:
+    """Clamp the raw axes to [-1, 1] -- the normalised command as it crosses the
+    WebSocket, before any physical scaling.
+
+    This is the imitation-learning action label. A human operator and a future
+    autonomous policy occupy the same slot (the WebSocket sender), so logging this
+    value -- not the scaled cmd_vel -- keeps the training target in the model's own
+    output space (what it must emit) rather than in physical units. Deadzone is
+    deliberately NOT applied: it is a downstream safety filter (``command_to_twist``)
+    applied identically to human and policy commands, not part of the demonstrated
+    intent, so train/inference stay symmetric.
+    """
+    return clamp(vx_norm, -1.0, 1.0), clamp(wz_norm, -1.0, 1.0)

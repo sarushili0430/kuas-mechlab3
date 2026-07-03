@@ -19,6 +19,15 @@ Three-layer failsafe, each independent:
   1. socket close -- a dropped client zeroes the very next published Twist
   2. hold_timeout -- a connected-but-silent client decays to a zero Twist
   3. mbed_driver  -- the driver's own cmd_timeout watchdog (unchanged)
+
+Alongside cmd_vel it also publishes the *normalised* command on ``cmd_norm``
+(geometry_msgs/TwistStamped: vx in linear.x, wz in angular.z, both in [-1, 1]) --
+the raw axes as they cross the WebSocket, stamped on the node clock so an offline
+tool can pair each action with the camera frame in effect at that instant. This is
+the action label for imitation-learning logs: a recorded human demonstration and a
+future autonomous policy occupy the same WebSocket slot, so this topic is exactly
+what the policy must learn to emit. It is publish-only -- recording is a separate
+concern (see ``scripts/record_episodes.py``).
 """
 
 import asyncio
@@ -28,10 +37,14 @@ from typing import Any
 
 import rclpy
 import websockets
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.node import Node
 
-from kuas_mechlab3.drive.teleop_command import command_to_twist, parse_command
+from kuas_mechlab3.drive.teleop_command import (
+    command_to_norm,
+    command_to_twist,
+    parse_command,
+)
 
 
 class CommandStore:
@@ -184,6 +197,9 @@ class TeleopServer(Node):  # type: ignore[misc]
 
         self._store = CommandStore()
         self._pub = self.create_publisher(Twist, "cmd_vel", 10)
+        # Normalised twin of cmd_vel for imitation-learning logs (the action a
+        # policy must reproduce); stamped on the node clock for offline sync.
+        self._norm_pub = self.create_publisher(TwistStamped, "cmd_norm", 10)
 
         self._server = _CommandWsServer(
             host, port, self._store, ping_interval, ping_timeout
@@ -196,21 +212,38 @@ class TeleopServer(Node):  # type: ignore[misc]
         self.get_logger().info(f"teleop_server up: ws://{host}:{port} -> cmd_vel")
 
     def _tick(self) -> None:
-        """Publish the latest command as a Twist, or zero if stale / unmanned."""
+        """Publish the latest command on cmd_vel, plus its normalised twin on
+        cmd_norm for logging; both zero if the client is stale / unmanned."""
         vx_norm, wz_norm, age, has_client = self._store.snapshot()
+        live = has_client and age <= self._hold_timeout
+
         twist = Twist()
-        if has_client and age <= self._hold_timeout:
+        norm_vx, norm_wz = 0.0, 0.0
+        if live:
             vx, wz = command_to_twist(
                 vx_norm, wz_norm, self._max_linear, self._max_angular, self._deadzone
             )
             twist.linear.x = vx
             twist.angular.z = wz
+            norm_vx, norm_wz = command_to_norm(vx_norm, wz_norm)
         self._pub.publish(twist)
+        self._publish_norm(norm_vx, norm_wz)
+
+    def _publish_norm(self, vx: float, wz: float) -> None:
+        """Publish the normalised command (vx, wz in [-1, 1]) on cmd_norm, stamped
+        on the same clock as the camera frames so an offline converter can pair
+        each action with the image in effect at that instant."""
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.twist.linear.x = vx
+        msg.twist.angular.z = wz
+        self._norm_pub.publish(msg)
 
     def shutdown(self) -> None:
-        """Stop the server and send a final explicit zero Twist."""
+        """Stop the server and send a final explicit zero on both topics."""
         self._server.shutdown()
         self._pub.publish(Twist())
+        self._publish_norm(0.0, 0.0)
 
 
 def main(args: list[str] | None = None) -> None:
