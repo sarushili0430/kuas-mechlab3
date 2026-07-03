@@ -68,6 +68,12 @@ A bare BNO055 chip would need external pull-ups added.
 Signal is the **only** servo wire to the Nucleo (3.3 V pulse drives them fine).
 **V+ and GND go to the dedicated servo rail** — never the Nucleo (see §4).
 
+The firmware drives these open-loop from the Pi via a dedicated `us1/us2/a` serial
+packet (50 Hz; pulse width in µs, clamped to `[500, 2500]`), separate from the
+`s1/s2/s3/s4/d` drive packet. Servos hold their last commanded pose (no watchdog),
+and boot idle (no pulse) until the first command. See the README's
+«サーボ (アーム) 制御» and `firmware/robot/src/main.cpp` (`ServoOut`).
+
 ### 1e. Serial → Pi — USART2 over the ST-Link USB (VCP)
 | Signal | MCU | Firmware token | Note |
 |--------|-----|----------------|------|

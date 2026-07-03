@@ -2,10 +2,16 @@
 
 Responsibilities owned here:
   * ROS I/O   -- subscribe cmd_vel (geometry_msgs/Twist); publish wheel rpm/pwm
+  * arm I/O   -- subscribe servo_cmd (std_msgs/Float32MultiArray, joint angles)
   * failsafe  -- watchdog stop when cmd_vel goes stale; final stop on shutdown
 
 Mixing is delegated to ``kinematics`` and the wire format to ``protocol`` /
 ``SerialLink``, so this node never touches raw bytes or robot geometry directly.
+
+Servos share the one serial port this node owns, so servo commands are forwarded
+from here too (over the separate 'a'-terminated packet). They are open-loop and
+hold their last position, so -- unlike cmd_vel -- there is no servo watchdog: a
+stale servo_cmd simply leaves the arm where it is.
 """
 
 import rclpy
@@ -14,7 +20,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
 from kuas_mechlab3.drive.kinematics import twist_to_setpoints
-from kuas_mechlab3.drive.protocol import Telemetry, parse_telemetry
+from kuas_mechlab3.drive.protocol import Telemetry, angle_to_us, parse_telemetry
 from kuas_mechlab3.drive.serial_link import SerialLink
 
 
@@ -33,12 +39,20 @@ class MbedDriver(Node):  # type: ignore[misc]
         self.declare_parameter("turn_sign", 1.0)
         self.declare_parameter("cmd_timeout", 0.4)
         self.declare_parameter("telemetry_rate", 50.0)
+        self.declare_parameter("servo_min_us", 500)
+        self.declare_parameter("servo_max_us", 2500)
+        self.declare_parameter("servo_min_deg", 0.0)
+        self.declare_parameter("servo_max_deg", 180.0)
 
         self._max_linear = float(self.get_parameter("max_linear").value)
         self._max_angular = float(self.get_parameter("max_angular").value)
         self._wheel_setpoint = float(self.get_parameter("wheel_setpoint").value)
         self._turn_sign = float(self.get_parameter("turn_sign").value)
         self._cmd_timeout = float(self.get_parameter("cmd_timeout").value)
+        self._servo_min_us = int(self.get_parameter("servo_min_us").value)
+        self._servo_max_us = int(self.get_parameter("servo_max_us").value)
+        self._servo_min_deg = float(self.get_parameter("servo_min_deg").value)
+        self._servo_max_deg = float(self.get_parameter("servo_max_deg").value)
         port = str(self.get_parameter("port").value)
         baud = int(self.get_parameter("baud").value)
 
@@ -50,6 +64,9 @@ class MbedDriver(Node):  # type: ignore[misc]
         self._send_stop()  # known-safe state on launch
 
         self._sub = self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
+        self._servo_sub = self.create_subscription(
+            Float32MultiArray, "servo_cmd", self._on_servo_cmd, 10
+        )
         self._rpm_pub = self.create_publisher(Float32MultiArray, "~/wheel_rpm", 10)
         self._pwm_pub = self.create_publisher(Float32MultiArray, "~/wheel_pwm", 10)
 
@@ -72,6 +89,31 @@ class MbedDriver(Node):  # type: ignore[misc]
         self._link.send_setpoints(*setpoints)
         self._last_cmd_t = self.get_clock().now()
         self._stopped = all(v == 0.0 for v in setpoints)
+
+    def _on_servo_cmd(self, msg: Float32MultiArray) -> None:
+        """Map two joint angles (deg) to servo pulses and forward to the firmware.
+
+        Expects ``data = [shoulder_deg, elbow_deg]``; extra entries are ignored,
+        fewer than two is dropped with a warning. Open-loop and no watchdog: the
+        arm holds the last commanded pose until the next servo_cmd (or reset).
+        """
+        angles = list(msg.data)
+        if len(angles) < 2:
+            self.get_logger().warn(
+                f"servo_cmd needs 2 angles, got {len(angles)} -- ignored"
+            )
+            return
+        us = [
+            angle_to_us(
+                float(angles[i]),
+                self._servo_min_deg,
+                self._servo_max_deg,
+                self._servo_min_us,
+                self._servo_max_us,
+            )
+            for i in range(2)
+        ]
+        self._link.send_servo_us(us[0], us[1])
 
     def _check_watchdog(self) -> None:
         """Stop the wheels if no fresh cmd_vel arrived within cmd_timeout."""
