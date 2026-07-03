@@ -19,15 +19,17 @@ static const MotorPins MOTOR_PINS[4] = {
 
 // 各輪の正転符号: +1 なら +setpoint で前進、-1 で反転。
 // 2026-06-16 のジョグ試験でハード確定（arthur/dev で end-to-end 検証済み）。
+// 2026-07-03 基盤を上下逆に取り付けたため、全 4 輪の回転方向を反転
+// （旧 {-1,+1,-1,+1} → 全符号反転）。チャンネル⇔コーナー対応は不変。
 // 物理コーナー: ch0=後左(BL), ch1=前左(FL), ch2=後右(BR), ch3=前右(FR)。
 // 左側=ch0+ch1 / 右側=ch2+ch3 はスキッドステアの左右グルーピングと一致するので、
 // ホスト側 kinematics（s1,s2=左 / s3,s4=右）は無改修でよい。
-// 1 輪が逆回転する場合は該当 DIR[i] の符号を反転して再フラッシュ（scripts/pi-jog.py で確認）。
-static const int DIR[4] = {-1, +1, -1, +1};
+// 1 輪が逆回転する場合は該当 MOTOR_DIR[i] の符号を反転して再フラッシュ（scripts/pi-jog.py で確認）。
+static const int MOTOR_DIR[4] = {+1, -1, +1, -1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
-static const int   PWM_CAP      = 1500;   // ≈37.5%。突入電流・速度を抑える上限
+static const int   PWM_CAP      = 4000;   // =100%(4000/4000)。満舵で常時フルduty。電流/発熱最大、短時間で
 static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
 static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
 static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz
@@ -88,7 +90,7 @@ int main() {
                 if (sscanf(rx, "%f/%f/%f/%f", &v[0], &v[1], &v[2], &v[3]) == 4) {
                     for (int i = 0; i < 4; i++) {
                         sp[i] = v[i];
-                        motors[i].apply(int(DIR[i] * v[i] / SP_FULL * PWM_CAP));
+                        motors[i].apply(int(MOTOR_DIR[i] * v[i] / SP_FULL * PWM_CAP));
                     }
                     cmd_timer.reset();
                 }
