@@ -31,6 +31,7 @@ setup(
             "teleop_ws_client = kuas_mechlab3.drive.teleop_ws_client:main",
             "camera_node = kuas_mechlab3.camera.camera_node:main",
             "mjpeg_server = kuas_mechlab3.camera.mjpeg_server:main",
+            "record_server = kuas_mechlab3.record_server:main",
         ],
     },
 )

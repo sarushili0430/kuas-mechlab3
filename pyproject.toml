@@ -73,6 +73,7 @@ omit = [
     "*/camera/capture.py",
     "*/camera/camera_node.py",
     "*/camera/mjpeg_server.py",
+    "*/record_server.py",
 ]
 
 [tool.coverage.report]
