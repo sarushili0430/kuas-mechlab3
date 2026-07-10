@@ -660,6 +660,74 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 ---
 
+## 信号機検出 (traffic)
+
+競技フィールドの**信号機を検出して状態（赤/緑/黄）を判定**し、緑のときに `traffic_light_topic` へ `〈チーム番号〉Green`（例 `11Green`）を publish する `kuas_mechlab3.traffic` サブパッケージ。ML3 のバリア課題では、この**チーム番号付きメッセージ**をオンフィールドの ROS に送ると 20 秒間バリアが開く（我々はチーム 11 なので `11Green` を送る）。`traffic_light` ノードがカメラ映像から YOLOv8 で信号機を検出し、検出枠を含むフレームの HSV マスクのピクセル数で色を判定、`traffic_subscriber` がそのメッセージを購読してログに出す（＝チーム番号＋色が出ていることの確認用）。
+
+```
+[camera] ──frame──> [traffic_light] ──traffic_light_topic(String "11Green")──> [traffic_subscriber] ──> ログ
+                    （YOLOv8 で検出 → HSV で色判定 → <team><Color> を publish／緑ならバリアが開く）
+```
+
+責任分離（リポジトリ方針どおり、純ロジックは pytest / cv2・YOLO・ROS・I-O は colcon でテスト）:
+
+| モジュール | 責任 | テスト |
+| --- | --- | --- |
+| `light_logic.py` | 色判定（ピクセル数→色）と `<team><Color>` 整形（純） | pytest |
+| `traffic_light_node.py` | ROSノード: カメラ→YOLO検出→HSVで色判定→publish | colcon |
+| `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
+
+> `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
+
+### 実行（ROS2 Humble 上）
+
+```bash
+colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+
+# 検出＋publish（チーム番号は既定 11。別チームは team_number で上書き）
+ros2 run kuas_mechlab3 traffic_light --ros-args -p team_number:=11
+
+# 別ターミナルで購読して「11Green」等が出るか確認
+ros2 run kuas_mechlab3 traffic_subscriber
+```
+
+画面のある PC で検出枠を見たいときは `-p show_window:=true` を付ける（`q` で終了）。素の CLI でも `ros2 topic echo /traffic_light_topic` で中身を確認できる。
+
+### 主要パラメータ
+
+`traffic_light`:
+
+| 名前 | 既定 | 説明 |
+| --- | --- | --- |
+| `team_number` | `11` | メッセージ先頭に付けるチーム番号（`<team>Green` の `<team>`） |
+| `camera_index` | `0` | `cv2.VideoCapture` に渡すカメラ番号 |
+| `model` | `yolov8n.pt` | YOLOv8 のモデル（初回は自動ダウンロード） |
+| `imgsz` | `256` | YOLO 推論の入力解像度（小さいほど軽い） |
+| `show_window` | `false` | 検出結果のプレビュー窓を出すか（ヘッドレスは false のまま） |
+
+### テスト手順
+
+**1. 純ロジック（ROS 不要・PC で即実行）**
+
+色判定と `<team><Color>` 整形は純 Python なので pytest で確認できる。
+
+```bash
+pytest src/kuas_mechlab3/test/test_light_logic.py -v
+```
+
+**2. publish の確認（ROS2 Humble・カメラ接続）** — ビルド後、信号機（または赤/緑/黄の色）をカメラに映して:
+
+```bash
+ros2 run kuas_mechlab3 traffic_light --ros-args -p team_number:=11
+ros2 topic echo /traffic_light_topic          # 緑を映すと data: "11Green" が出る
+ros2 run kuas_mechlab3 traffic_subscriber      # 別ターミナル: 受信ログに 11Green が出る
+```
+
+緑を映したときに `11Green` が publish されればバリア課題の要件を満たす。色が出ない／`unknown` になる場合は、照明や `light_logic.py` の HSV しきい値を調整する。
+
+---
+
 ## リモート teleop (WebSocket)
 
 操縦者の PC（ブラウザや手元のクライアント）から **WebSocket で `cmd_vel` を送る**ための `kuas_mechlab3.drive` の teleop ブリッジ。`teleop_server` が WS で正規化済みのドライブ指令 `{"vx", "wz"}`（各軸 -1..1）を受け取り、`teleop_keyboard` と同じく一定レートで `geometry_msgs/Twist` を `cmd_vel` に publish する。`cmd_vel` は標準インターフェースなので **`mbed_driver` / `kinematics` / ウォッチドッグには一切手を入れない**（`teleop_keyboard` をネットワーク越しにしただけ）。
