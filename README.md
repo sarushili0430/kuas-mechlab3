@@ -905,7 +905,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 | --- | --- | --- |
 | `scripts/start-teleop.sh` | テレオプ WebSocket ブリッジ（`teleop_launch.py`） | `ws://<ラズパイのIP>:9001` |
 | `scripts/start-cameras.sh` | 前後カメラ + MJPEG 配信（`cameras_launch.py`） | `http://<ラズパイのIP>:8080/` |
-| `scripts/start-all.sh` | driver + カメラ + teleop を 1 プロセスで束ねて起動 | 上記の両方 |
+| `scripts/start-all.sh` | driver + カメラ + teleop + 録画 + 信号機を 1 プロセスで束ねて起動 | 上記 + 録画/信号機トピック |
 | `scripts/start-record.sh` | 人間のデモ走行を 1 エピソードずつ rosbag に記録（模倣学習データ収集） | `datasets/raw/` に保存 |
 | `scripts/lib-ros-env.sh` | 共通の環境セットアップ（各スクリプトが `source` する。直接は実行しない） | — |
 
@@ -934,15 +934,28 @@ FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-cameras.sh
 ./scripts/start-cameras.sh width:=640 height:=480 fps:=15.0 stream_fps:=15.0
 ```
 
-**`scripts/start-all.sh`** — driver + カメラ + teleop を 1 発。3 つを束ねて起動し、**`Ctrl+C` で全ノードへ停止指令を送ってまとめて落とす**。実機オペレーションの通常運用はこれ 1 本でよい。
+**`scripts/start-all.sh`** — driver + カメラ + teleop + 録画 + 信号機を 1 発。5 つの launch を束ねて起動し、**`Ctrl+C` で全ノードへ停止指令を送ってまとめて落とす**。実機オペレーションの通常運用はこれ 1 本でよい。
 
 ```bash
 ./scripts/start-all.sh
-# カメラ device の上書きはそのまま効く:
-FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-all.sh
+# カメラ device / 信号機のチーム番号の上書きはそのまま効く:
+FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 TEAM_NUMBER=11 ./scripts/start-all.sh
 ```
 
-> `start-all.sh` は 3 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。値を変えたいときは各 launch ファイルの既定値を直すか、`start-teleop.sh` / `start-cameras.sh` を個別に使う。
+> `start-all.sh` は 5 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。上書きは環境変数（`FRONT_DEVICE` / `REAR_DEVICE` / `ROUTE` / `OPERATOR` / `TEAM_NUMBER`）で行うか、各 launch ファイルの既定値を直す／個別スクリプトを使う。
+
+**boot 時から常駐（systemd） — `scripts/kuas-mechlab3.service`** — 競技運用で **電源を入れたらスタック一式（信号機検出も含む）が自動で上がる**ようにするには、`start-all.sh` を systemd サービスとして登録する。ユニット定義を [`scripts/kuas-mechlab3.service`](./scripts/kuas-mechlab3.service) に用意してある（`User=` と 2 つのパスを実機に合わせて編集する）。
+
+```bash
+sudo cp scripts/kuas-mechlab3.service /etc/systemd/system/
+sudoedit /etc/systemd/system/kuas-mechlab3.service   # User= / WorkingDirectory= / ExecStart= を実機に合わせる
+sudo systemctl daemon-reload
+sudo systemctl enable --now kuas-mechlab3.service     # 今すぐ起動 + 次回 boot から常駐
+journalctl -u kuas-mechlab3 -f                        # ログ追跡
+sudo systemctl stop kuas-mechlab3                     # 一時停止（start-all.sh が子を掃除して停止）
+```
+
+> 信号機検出は `ultralytics`（YOLOv8）が要る。boot 常駐にする前に `pip install ultralytics` と **モデル `yolov8n.pt` の事前ダウンロード**（初回実行が取得するので一度オンラインで走らせておく）を済ませること。オフライン会場で初回 DL に失敗すると信号機ノードだけ上がらない。
 
 **`scripts/start-record.sh`** — 人間のデモ走行を **1 エピソード = 1 bag + `meta.json`** で記録する（模倣学習のデータ収集 / 下記「自律化ロードマップ」Phase 2）。先に driver・カメラ・teleop を起動しておく（別ターミナル or `start-all.sh`）。記録するのは `/cmd_norm`（行動ラベル）+ 前後カメラ + `cmd_vel` / 車輪テレメトリ。
 
@@ -1054,13 +1067,17 @@ while True:
 │       │   │   ├── teleop_keyboard.py  # ROSノード: キー→cmd_vel
 │       │   │   ├── teleop_server.py    # ROSノード: WS→cmd_vel
 │       │   │   └── teleop_ws_client.py # 操縦者PC用の簡易 WS クライアント
-│       │   └── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
-│       │       ├── frame.py           # 純: FOURCC / デバイス解決
-│       │       ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
-│       │       ├── capture.py         # cv2 デバイス I/O
-│       │       ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
-│       │       └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
-│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop）
+│       │   ├── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
+│       │   │   ├── frame.py           # 純: FOURCC / デバイス解決
+│       │   │   ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
+│       │   │   ├── capture.py         # cv2 デバイス I/O
+│       │   │   ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
+│       │   │   └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
+│       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
+│       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
+│       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
+│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
@@ -1069,7 +1086,8 @@ while True:
 │   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
 ├── docs/                     # 補足ドキュメント（autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
 ├── scripts/                  # bring-up 用スクリプト
-│   ├── start-all.sh          # driver + カメラ + teleop を一発起動（Ctrl+C で一括停止）
+│   ├── start-all.sh          # driver + カメラ + teleop + 録画 + 信号機を一発起動（Ctrl+C で一括停止）
+│   ├── kuas-mechlab3.service # 上を boot 時から常駐させる systemd ユニット定義
 │   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
 │   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
 │   ├── start-record.sh       # デモ走行を rosbag 録画（模倣学習データ収集）
