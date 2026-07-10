@@ -662,20 +662,26 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 ## 信号機検出 (traffic)
 
-競技フィールドの**信号機を検出して状態（赤/緑/黄）を判定**し、緑のときに `traffic_light_topic` へ `〈チーム番号〉Green`（例 `11Green`）を publish する `kuas_mechlab3.traffic` サブパッケージ。ML3 のバリア課題では、この**チーム番号付きメッセージ**をオンフィールドの ROS に送ると 20 秒間バリアが開く（我々はチーム 11 なので `11Green` を送る）。`traffic_light` ノードがカメラ映像から YOLOv8 で信号機を検出し、検出枠を含むフレームの HSV マスクのピクセル数で色を判定、`traffic_subscriber` がそのメッセージを購読してログに出す（＝チーム番号＋色が出ていることの確認用）。
+競技フィールドの**信号機を検出して状態（赤/緑/黄）を判定**し、緑のときに `traffic_light_topic` へ `〈チーム番号〉Green`（例 `11Green`）を publish する `kuas_mechlab3.traffic` サブパッケージ。ML3 のバリア課題では、この**チーム番号付きメッセージ**をオンフィールドの ROS に送ると 20 秒間バリアが開く（我々はチーム 11 なので `11Green` を送る）。`traffic_light` ノードは**カメラデバイスを直接開かず**、`camera_node` が流す `CompressedImage`（`mjpeg_server` と同じ消費側）を購読して YOLOv8 で信号機を検出し、フレームの HSV マスクのピクセル数で色を判定する。`traffic_subscriber` がそのメッセージを購読してログに出す（＝チーム番号＋色が出ていることの確認用）。
+
+> **カメラ非占有（衝突しない設計）**: デバイス `/dev/video*` は `camera_node` だけが開き、映像は ROS トピック（DDS）で共有する。`traffic_light` はそのトピックを購読するだけなので、`cameras_launch` / `start-all.sh` と**同時に動かしてもカメラ競合が起きない**。単体で使うときも `camera_node` を 1 つ上げてトピックを流せばよい。
 
 ```
-[camera] ──frame──> [traffic_light] ──traffic_light_topic(String "11Green")──> [traffic_subscriber] ──> ログ
-                    （YOLOv8 で検出 → HSV で色判定 → <team><Color> を publish／緑ならバリアが開く）
+[camera_node] ──/front_camera/image_raw/compressed(CompressedImage,JPEG)──> [traffic_light]
+                                                                                   │ YOLOv8 で検出 → HSV で色判定
+                                                                                   ▼
+                                     [traffic_subscriber] <──traffic_light_topic(String "11Green")── （緑ならバリアが開く）
 ```
 
 責任分離（リポジトリ方針どおり、純ロジックは pytest / cv2・YOLO・ROS・I-O は colcon でテスト）:
 
 | モジュール | 責任 | テスト |
 | --- | --- | --- |
-| `light_logic.py` | 色判定（ピクセル数→色）と `<team><Color>` 整形（純） | pytest |
-| `traffic_light_node.py` | ROSノード: カメラ→YOLO検出→HSVで色判定→publish | colcon |
+| `light_logic.py` | 色判定（ピクセル数→色）と publish 判断 `status_message`（検出＋色→`<team><Color>` or 無出力）。**入出力契約の純ロジック** | pytest |
+| `traffic_light_node.py` | ROSノード: カメラトピック購読→JPEGデコード→YOLO検出→HSVで色判定→publish | colcon |
 | `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
+
+> **publish の判断（出力 IO）は `light_logic.status_message` に集約**し pytest で担保している。信号機が写っていない／色が曖昧（`unknown`）なフレームでは `None` を返して**何も publish しない**（誤った状態を流さない）。ノード側は「デコード→検出→`status_message`→publish」の薄い配線に徹する。
 
 > `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
 
@@ -685,14 +691,19 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 colcon build --packages-select kuas_mechlab3
 source install/setup.bash
 
-# 検出＋publish（チーム番号は既定 11。別チームは team_number で上書き）
+# 1) カメラ映像をトピックに流す（前後カメラ + 配信をまとめて。既に start-all.sh を動かしていればこれは不要）
+ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0
+#    単体で前カメラだけ上げるなら:
+#    ros2 run kuas_mechlab3 camera_node --ros-args -r __node:=front_camera -p device:=/dev/video0
+
+# 2) 検出＋publish（前カメラのトピックを購読。チーム番号は既定 11、別チームは team_number で上書き）
 ros2 run kuas_mechlab3 traffic_light --ros-args -p team_number:=11
 
-# 別ターミナルで購読して「11Green」等が出るか確認
+# 3) 別ターミナルで購読して「11Green」等が出るか確認
 ros2 run kuas_mechlab3 traffic_subscriber
 ```
 
-画面のある PC で検出枠を見たいときは `-p show_window:=true` を付ける（`q` で終了）。素の CLI でも `ros2 topic echo /traffic_light_topic` で中身を確認できる。
+別カメラのトピックを見たいときは `-p image_topic:=/rear_camera/image_raw/compressed` のように差し替える。画面のある PC で検出フレームを見たいときは `-p show_window:=true`（`q` は使わず Ctrl+C で終了）。素の CLI でも `ros2 topic echo /traffic_light_topic` で中身を確認できる。
 
 ### 主要パラメータ
 
@@ -701,30 +712,29 @@ ros2 run kuas_mechlab3 traffic_subscriber
 | 名前 | 既定 | 説明 |
 | --- | --- | --- |
 | `team_number` | `11` | メッセージ先頭に付けるチーム番号（`<team>Green` の `<team>`） |
-| `camera_index` | `0` | `cv2.VideoCapture` に渡すカメラ番号 |
+| `image_topic` | `/front_camera/image_raw/compressed` | 購読するカメラ（`CompressedImage`）トピック |
 | `model` | `yolov8n.pt` | YOLOv8 のモデル（初回は自動ダウンロード） |
 | `imgsz` | `256` | YOLO 推論の入力解像度（小さいほど軽い） |
-| `show_window` | `false` | 検出結果のプレビュー窓を出すか（ヘッドレスは false のまま） |
+| `show_window` | `false` | 検出フレームのプレビュー窓を出すか（ヘッドレスは false のまま） |
 
 ### テスト手順
 
 **1. 純ロジック（ROS 不要・PC で即実行）**
 
-色判定と `<team><Color>` 整形は純 Python なので pytest で確認できる。
+色判定と publish 判断（`<team><Color>` の出力 IO 契約）は純 Python なので pytest で確認できる。
 
 ```bash
 pytest src/kuas_mechlab3/test/test_light_logic.py -v
 ```
 
-**2. publish の確認（ROS2 Humble・カメラ接続）** — ビルド後、信号機（または赤/緑/黄の色）をカメラに映して:
+**2. publish の確認（ROS2 Humble・カメラ接続）** — ビルド後、上の 1)〜3) を起動し、信号機（または赤/緑/黄の色）を前カメラに映して:
 
 ```bash
-ros2 run kuas_mechlab3 traffic_light --ros-args -p team_number:=11
 ros2 topic echo /traffic_light_topic          # 緑を映すと data: "11Green" が出る
-ros2 run kuas_mechlab3 traffic_subscriber      # 別ターミナル: 受信ログに 11Green が出る
+ros2 topic echo /front_camera/image_raw/compressed --no-arr   # カメラ側が流れているかの切り分け
 ```
 
-緑を映したときに `11Green` が publish されればバリア課題の要件を満たす。色が出ない／`unknown` になる場合は、照明や `light_logic.py` の HSV しきい値を調整する。
+緑を映したときに `11Green` が publish されればバリア課題の要件を満たす。何も出ない場合は ① `camera_node` のトピックが流れているか（`ros2 topic hz`）、② `image_topic` が一致しているか、③ 照明や `traffic_light_node.py` の HSV しきい値、の順に切り分ける。
 
 ---
 
@@ -895,7 +905,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 | --- | --- | --- |
 | `scripts/start-teleop.sh` | テレオプ WebSocket ブリッジ（`teleop_launch.py`） | `ws://<ラズパイのIP>:9001` |
 | `scripts/start-cameras.sh` | 前後カメラ + MJPEG 配信（`cameras_launch.py`） | `http://<ラズパイのIP>:8080/` |
-| `scripts/start-all.sh` | driver + カメラ + teleop を 1 プロセスで束ねて起動 | 上記の両方 |
+| `scripts/start-all.sh` | driver + カメラ + teleop + 録画 + 信号機を 1 プロセスで束ねて起動 | 上記 + 録画/信号機トピック |
 | `scripts/start-record.sh` | 人間のデモ走行を 1 エピソードずつ rosbag に記録（模倣学習データ収集） | `datasets/raw/` に保存 |
 | `scripts/lib-ros-env.sh` | 共通の環境セットアップ（各スクリプトが `source` する。直接は実行しない） | — |
 
@@ -924,15 +934,28 @@ FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-cameras.sh
 ./scripts/start-cameras.sh width:=640 height:=480 fps:=15.0 stream_fps:=15.0
 ```
 
-**`scripts/start-all.sh`** — driver + カメラ + teleop を 1 発。3 つを束ねて起動し、**`Ctrl+C` で全ノードへ停止指令を送ってまとめて落とす**。実機オペレーションの通常運用はこれ 1 本でよい。
+**`scripts/start-all.sh`** — driver + カメラ + teleop + 録画 + 信号機を 1 発。5 つの launch を束ねて起動し、**`Ctrl+C` で全ノードへ停止指令を送ってまとめて落とす**。実機オペレーションの通常運用はこれ 1 本でよい。
 
 ```bash
 ./scripts/start-all.sh
-# カメラ device の上書きはそのまま効く:
-FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-all.sh
+# カメラ device / 信号機のチーム番号の上書きはそのまま効く:
+FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 TEAM_NUMBER=11 ./scripts/start-all.sh
 ```
 
-> `start-all.sh` は 3 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。値を変えたいときは各 launch ファイルの既定値を直すか、`start-teleop.sh` / `start-cameras.sh` を個別に使う。
+> `start-all.sh` は 5 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。上書きは環境変数（`FRONT_DEVICE` / `REAR_DEVICE` / `ROUTE` / `OPERATOR` / `TEAM_NUMBER`）で行うか、各 launch ファイルの既定値を直す／個別スクリプトを使う。
+
+**boot 時から常駐（systemd） — `scripts/kuas-mechlab3.service`** — 競技運用で **電源を入れたらスタック一式（信号機検出も含む）が自動で上がる**ようにするには、`start-all.sh` を systemd サービスとして登録する。ユニット定義を [`scripts/kuas-mechlab3.service`](./scripts/kuas-mechlab3.service) に用意してある（`User=` と 2 つのパスを実機に合わせて編集する）。
+
+```bash
+sudo cp scripts/kuas-mechlab3.service /etc/systemd/system/
+sudoedit /etc/systemd/system/kuas-mechlab3.service   # User= / WorkingDirectory= / ExecStart= を実機に合わせる
+sudo systemctl daemon-reload
+sudo systemctl enable --now kuas-mechlab3.service     # 今すぐ起動 + 次回 boot から常駐
+journalctl -u kuas-mechlab3 -f                        # ログ追跡
+sudo systemctl stop kuas-mechlab3                     # 一時停止（start-all.sh が子を掃除して停止）
+```
+
+> 信号機検出は `ultralytics`（YOLOv8）が要る。boot 常駐にする前に `pip install ultralytics` と **モデル `yolov8n.pt` の事前ダウンロード**（初回実行が取得するので一度オンラインで走らせておく）を済ませること。オフライン会場で初回 DL に失敗すると信号機ノードだけ上がらない。
 
 **`scripts/start-record.sh`** — 人間のデモ走行を **1 エピソード = 1 bag + `meta.json`** で記録する（模倣学習のデータ収集 / 下記「自律化ロードマップ」Phase 2）。先に driver・カメラ・teleop を起動しておく（別ターミナル or `start-all.sh`）。記録するのは `/cmd_norm`（行動ラベル）+ 前後カメラ + `cmd_vel` / 車輪テレメトリ。
 
@@ -1044,13 +1067,17 @@ while True:
 │       │   │   ├── teleop_keyboard.py  # ROSノード: キー→cmd_vel
 │       │   │   ├── teleop_server.py    # ROSノード: WS→cmd_vel
 │       │   │   └── teleop_ws_client.py # 操縦者PC用の簡易 WS クライアント
-│       │   └── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
-│       │       ├── frame.py           # 純: FOURCC / デバイス解決
-│       │       ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
-│       │       ├── capture.py         # cv2 デバイス I/O
-│       │       ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
-│       │       └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
-│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop）
+│       │   ├── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
+│       │   │   ├── frame.py           # 純: FOURCC / デバイス解決
+│       │   │   ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
+│       │   │   ├── capture.py         # cv2 デバイス I/O
+│       │   │   ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
+│       │   │   └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
+│       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
+│       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
+│       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
+│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
@@ -1059,7 +1086,8 @@ while True:
 │   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
 ├── docs/                     # 補足ドキュメント（autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
 ├── scripts/                  # bring-up 用スクリプト
-│   ├── start-all.sh          # driver + カメラ + teleop を一発起動（Ctrl+C で一括停止）
+│   ├── start-all.sh          # driver + カメラ + teleop + 録画 + 信号機を一発起動（Ctrl+C で一括停止）
+│   ├── kuas-mechlab3.service # 上を boot 時から常駐させる systemd ユニット定義
 │   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
 │   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
 │   ├── start-record.sh       # デモ走行を rosbag 録画（模倣学習データ収集）
