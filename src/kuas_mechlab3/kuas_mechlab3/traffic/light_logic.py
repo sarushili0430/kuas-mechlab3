@@ -31,3 +31,28 @@ def format_team_message(team_number: int, color: str) -> str:
     to match that ``<team><Color>`` contract.
     """
     return f"{team_number}{color.capitalize()}"
+
+
+def status_message(
+    detected: bool,
+    red_pixels: int,
+    green_pixels: int,
+    yellow_pixels: int,
+    team_number: int,
+) -> str | None:
+    """The exact string to publish for one frame, or ``None`` to stay quiet.
+
+    This is the node's output IO contract in one pure, testable place: it ties
+    the detection gate to the colour decision and the wire format. Nothing is
+    published unless a traffic light is actually in view *and* a definite colour
+    won -- a frame with no light, or an ambiguous ``"unknown"``, returns ``None``
+    (the node publishes nothing) rather than a misleading status. Otherwise the
+    team-tagged ``<team><Color>`` string is returned; a detected green light for
+    team 11 gives ``"11Green"`` -- the string the barrier opens for.
+    """
+    if not detected:
+        return None
+    color = classify_color(red_pixels, green_pixels, yellow_pixels)
+    if color == "unknown":
+        return None
+    return format_team_message(team_number, color)
