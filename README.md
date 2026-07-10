@@ -734,7 +734,9 @@ ros2 topic echo /traffic_light_topic          # 緑を映すと data: "11Green" 
 ros2 topic echo /front_camera/image_raw/compressed --no-arr   # カメラ側が流れているかの切り分け
 ```
 
-緑を映したときに `11Green` が publish されればバリア課題の要件を満たす。何も出ない場合は ① `camera_node` のトピックが流れているか（`ros2 topic hz`）、② `image_topic` が一致しているか、③ 照明や `traffic_light_node.py` の HSV しきい値、の順に切り分ける。
+緑を映したときに `11Green` が publish されればバリア課題の要件を満たす。何も出ない場合は ① `camera_node` のトピックが流れているか（`ros2 topic hz`）、② `image_topic` が一致しているか、③ 照明や HSV しきい値（`light_logic.py` の `HSV_SEGMENTS`）、の順に切り分ける。
+
+> **色判定のキャリブレーション**: 色の判定は**YOLO の検出枠の内側だけ**でピクセルを数える（背景に汚されない）。それでも実機のライトで色を取り違えるときは `-p debug:=true` を付けて起動すると、検出のたびに枠・信頼度・各色のピクセル数がログに出る（journalctl で見られる）ので、その実測値を見て `HSV_SEGMENTS` を調整する。赤は OpenCV の Hue 両端（0–10 と 170–179）にまたがり、赤と黄の間のオレンジ帯（Hue 11–17）は**どの色にも数えない**（露出で赤 LED がオレンジに写るため。曖昧なフレームは publish しない側に倒す）。
 
 ---
 
