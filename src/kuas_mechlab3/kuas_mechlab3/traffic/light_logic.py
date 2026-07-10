@@ -3,8 +3,53 @@
 The colour classification takes already-counted colour-mask pixel totals (the
 OpenCV masking itself lives in the node), so both the decision and the
 team-tagged message format are side-effect-free functions the standalone pytest
-job can cover without a ROS2 environment or a camera.
+job can cover without a ROS2 environment or a camera. The HSV colour table and
+the detection-box clipping live here too: they are plain data / arithmetic, and
+they are exactly the parts that were wrong when red and yellow were being
+reported as the same colour.
 """
+
+# One HSV bound as (hue, saturation, value); OpenCV hue is 0..179.
+HsvBound = tuple[int, int, int]
+
+# Colour-mask segments per lamp, as (low, high) inRange pairs.
+#
+# * Red wraps hue 0, so it needs TWO segments (0..10 and 170..179) -- masking
+#   only 0..10 misses half of the red glow and lets yellow win on a red lamp.
+# * Hue 11..17 (orange) is deliberately assigned to NEITHER red nor yellow: an
+#   overexposed red LED reads orange-ish, and claiming that band for either
+#   colour is how red and yellow get confused. Ambiguous pixels count nowhere,
+#   and classify_color's tie rule then keeps the node quiet.
+# * The saturation/value floors exclude the blown-out white LED core (low S)
+#   and the dark housing/background (low V) from every mask.
+#
+# Initial values are LED-typical; calibrate against journalctl output from the
+# node's debug:=true parameter if the field light reads differently.
+HSV_SEGMENTS: dict[str, tuple[tuple[HsvBound, HsvBound], ...]] = {
+    "red": (
+        ((0, 100, 90), (10, 255, 255)),
+        ((170, 100, 90), (179, 255, 255)),
+    ),
+    "yellow": (((18, 100, 90), (35, 255, 255)),),
+    "green": (((45, 80, 90), (95, 255, 255)),),
+}
+
+
+def clip_box(
+    x1: float, y1: float, x2: float, y2: float, width: int, height: int
+) -> tuple[int, int, int, int] | None:
+    """Clamp a detection box to the frame, or None if nothing usable remains.
+
+    YOLO boxes are floats and may poke past the frame edge; the colour masks
+    must count pixels inside the detected traffic light only (not the whole
+    frame, where the background outvotes the lamp), so the node crops the frame
+    to this clipped box before masking.
+    """
+    ix1, iy1 = max(0, int(x1)), max(0, int(y1))
+    ix2, iy2 = min(width, int(x2)), min(height, int(y2))
+    if ix2 - ix1 < 1 or iy2 - iy1 < 1:
+        return None
+    return ix1, iy1, ix2, iy2
 
 
 def classify_color(red_pixels: int, green_pixels: int, yellow_pixels: int) -> str:

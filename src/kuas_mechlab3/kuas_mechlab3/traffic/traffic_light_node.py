@@ -29,18 +29,10 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 from ultralytics import YOLO
 
-from kuas_mechlab3.traffic.light_logic import status_message
+from kuas_mechlab3.traffic.light_logic import HSV_SEGMENTS, clip_box, status_message
 
 # COCO class id 9 is "traffic light" -- restrict YOLO to just that class.
 _TRAFFIC_LIGHT_CLASS = 9
-
-# HSV inRange bounds (OpenCV hue is 0..179) for each light colour.
-_RED_LOW = np.array([0, 120, 70])
-_RED_HIGH = np.array([10, 255, 255])
-_GREEN_LOW = np.array([45, 100, 50])
-_GREEN_HIGH = np.array([75, 255, 255])
-_YELLOW_LOW = np.array([20, 100, 100])
-_YELLOW_HIGH = np.array([30, 255, 255])
 
 
 class TrafficLightDetector(Node):  # type: ignore[misc]
@@ -55,10 +47,12 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
         self.declare_parameter("model", "yolov8n.pt")
         self.declare_parameter("imgsz", 256)
         self.declare_parameter("show_window", False)
+        self.declare_parameter("debug", False)
 
         self._team_number = int(self.get_parameter("team_number").value)
         self._imgsz = int(self.get_parameter("imgsz").value)
         self._show_window = bool(self.get_parameter("show_window").value)
+        self._debug = bool(self.get_parameter("debug").value)
         model_path = str(self.get_parameter("model").value)
         image_topic = str(self.get_parameter("image_topic").value)
 
@@ -94,20 +88,38 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
             cv2.waitKey(1)
 
     def _detect(self, frame: Any) -> tuple[bool, int, int, int]:
-        """Return (light in view?, red, green, yellow HSV pixel counts) for a frame."""
+        """Return (light in view?, red, green, yellow HSV pixel counts) for a frame.
+
+        The colour masks are counted inside the highest-confidence detection box
+        only: on the whole frame the background outvotes the lamp, which is how
+        red and yellow ended up reported as the same colour.
+        """
         results = self._model(
-            frame,
-            classes=[_TRAFFIC_LIGHT_CLASS],
-            imgsz=self._imgsz,
-            vid_stride=2,
-            verbose=False,
+            frame, classes=[_TRAFFIC_LIGHT_CLASS], imgsz=self._imgsz, verbose=False
         )
-        detected = any(bool(result.boxes) for result in results)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        red = cv2.countNonZero(cv2.inRange(hsv, _RED_LOW, _RED_HIGH))
-        green = cv2.countNonZero(cv2.inRange(hsv, _GREEN_LOW, _GREEN_HIGH))
-        yellow = cv2.countNonZero(cv2.inRange(hsv, _YELLOW_LOW, _YELLOW_HIGH))
-        return detected, int(red), int(green), int(yellow)
+        boxes = results[0].boxes
+        if not boxes:
+            return False, 0, 0, 0
+        best = int(boxes.conf.argmax())
+        x1, y1, x2, y2 = (float(v) for v in boxes.xyxy[best])
+        box = clip_box(x1, y1, x2, y2, frame.shape[1], frame.shape[0])
+        if box is None:
+            return False, 0, 0, 0
+        hsv = cv2.cvtColor(frame[box[1] : box[3], box[0] : box[2]], cv2.COLOR_BGR2HSV)
+        counts = {
+            color: sum(
+                int(cv2.countNonZero(cv2.inRange(hsv, np.array(low), np.array(high))))
+                for low, high in segments
+            )
+            for color, segments in HSV_SEGMENTS.items()
+        }
+        if self._debug:
+            self.get_logger().info(
+                f"detect: box={box} conf={float(boxes.conf[best]):.2f} "
+                f"red={counts['red']} green={counts['green']} "
+                f"yellow={counts['yellow']}"
+            )
+        return True, counts["red"], counts["green"], counts["yellow"]
 
     def shutdown(self) -> None:
         """Close any preview window for a clean teardown."""
