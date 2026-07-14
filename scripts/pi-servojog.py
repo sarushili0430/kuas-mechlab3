@@ -3,8 +3,8 @@
 firmware echo as proof the signal reached the Nucleo.
 
 Usage:  python3 pi-servojog.py <shoulder_deg> <elbow_deg> [hold_seconds]
-  shoulder = Servo 1 (PB_14, TIM15_CH1)
-  elbow    = Servo 2 (PB_15, TIM15_CH2)
+  shoulder = Servo 1 (A0, software PWM)
+  elbow    = Servo 2 (A1, software PWM)
 
 One servo packet carries BOTH pulse widths and the servos are open-loop (no
 feedback to "hold the other where it is"), so give both angles explicitly. Angles

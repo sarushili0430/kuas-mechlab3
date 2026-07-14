@@ -4,9 +4,10 @@
 
   使い方（操縦者の PC、ROS は不要）:
     1) このファイルを PC にコピー
-    2) 下の  const PI = ... "192.168.1.42"  の IP をラズパイの IP に書き換えて保存
+    2) 下の  const PI = ... "192.168.1.64"  の IP をラズパイの IP に書き換えて保存
     3) ダブルクリックで開く（file://）。※ HTTPS 配信は混在コンテンツでブロックされる
     4) ページをクリックしてフォーカス → W/A/S/D で操縦（離す・閉じると停止）
+    5) アーム: 肩/肘スライダで角度指令（0–180°, 保持）／ LED: チェックで on/off
 
   前提（ラズパイ側）: cameras_launch.py（:8080）と teleop_launch.py（:9001）が起動済み。
 -->
@@ -19,6 +20,9 @@
     figure { display:inline-block; margin:8px }
     img { width:48vw; max-width:640px; border:1px solid #444; background:#000 }
     #status { padding:6px; font-weight:bold }
+    #arm { padding:10px; font-size:15px }
+    #arm label { margin:0 10px }
+    #arm input[type=range] { vertical-align:middle; width:220px }
   </style>
 </head>
 <body>
@@ -30,9 +34,19 @@
   </div>
   <p>このページにフォーカスして <b>W/A/S/D</b> で操縦（離すと停止）</p>
 
+  <!-- アーム（2軸サーボ）+ LED: ドライブとは別メッセージ、同じ WS 経由で送る -->
+  <div id="arm">
+    <label>肩 shoulder <span id="shv">90</span>°
+      <input type="range" id="sh" min="0" max="180" value="90"></label>
+    <label>肘 elbow <span id="elv">90</span>°
+      <input type="range" id="el" min="0" max="180" value="90"></label>
+    <label>LED <input type="checkbox" id="led"></label>
+  </div>
+
   <script>
-    // ★ ラズパイの IP に書き換える（file:// で開く場合は右の "192.168.1.42" を変更）
-    const PI = location.hostname || "192.168.1.42";
+    // ★ ラズパイの IP に合わせる（file:// で開くと下の PI 値が使われる）。
+    //    工房WiFi=192.168.1.64 ／ 競技は従来の ml3 WiFi(192.168.50.x)。開く網に合わせて設定。
+    const PI = location.hostname || "192.168.1.64";
     const CAM_PORT = 8080, WS_PORT = 9001;
     const FRONT = "/front_camera/image_raw/compressed";
     const REAR  = "/rear_camera/image_raw/compressed";
@@ -77,6 +91,21 @@
     // 5) 離脱時に明示停止（サーバ側も切断で止まる）
     addEventListener("beforeunload", () => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ vx: 0, wz: 0 }));
+    });
+
+    // 6) アーム: スライダ→ {"servo":[肩,肘]}（度）／ LED: チェック→ {"led": bool}。
+    //    ドライブのハートビートとは独立に、変化時だけ送る（サーバ側でラッチ・保持）。
+    function sendServo() {
+      shv.textContent = sh.value;
+      elv.textContent = el.value;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ servo: [Number(sh.value), Number(el.value)] }));
+      }
+    }
+    sh.addEventListener("input", sendServo);
+    el.addEventListener("input", sendServo);
+    led.addEventListener("change", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ led: led.checked }));
     });
   </script>
 </body>

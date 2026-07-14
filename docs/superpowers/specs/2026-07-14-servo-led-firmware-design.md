@@ -1,6 +1,13 @@
 # Servo + Green-LED Control — Design & Test Spec
 
-Date: 2026-07-14 · Branch: `arthur/dev` (local, not pushed) · Status: approved, pre-implementation
+Date: 2026-07-14 · Branch: `arthur/dev` (local, not pushed) · Status: implemented (see note below)
+
+> **★ Implementation note (post-build):** the **TIM15 / PB_14·PB_15 hardware-PWM plan in this spec
+> was abandoned.** Those pads measured shorted on this board and every hardware-PWM timer was
+> already taken (motors TIM1/3/16/17, Mbed µs-ticker TIM2), so the shipped firmware drives the
+> servos with **software PWM (`Ticker` + `Timeout`) on A0/A1** — see
+> `docs/robot-pinout-power-reference.md` §1d. The **wire protocol, the LED (D3), and the test plan
+> below still hold**; only the servo pin/timer choice changed.
 
 ## Goal
 Add 2-DoF arm (2× DS3225 servo) + a green indicator LED on top of the working drive

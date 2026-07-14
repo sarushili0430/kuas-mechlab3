@@ -11,10 +11,10 @@ Mixing is delegated to ``kinematics`` and the wire format to ``protocol`` /
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Bool, Float32MultiArray
 
 from kuas_mechlab3.drive.kinematics import twist_to_setpoints
-from kuas_mechlab3.drive.protocol import Telemetry, parse_telemetry
+from kuas_mechlab3.drive.protocol import Telemetry, angle_to_us, parse_telemetry
 from kuas_mechlab3.drive.serial_link import SerialLink
 
 
@@ -50,6 +50,13 @@ class MbedDriver(Node):  # type: ignore[misc]
         self._send_stop()  # known-safe state on launch
 
         self._sub = self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
+        # Arm + LED: latched set-and-hold commands (no watchdog -- unlike the
+        # wheels, the firmware holds the last servo pulse / LED state). Distinct
+        # packets ('a' / 'l' terminators) leave the 4-wheel drive path untouched.
+        self._servo_sub = self.create_subscription(
+            Float32MultiArray, "servo_cmd", self._on_servo, 10
+        )
+        self._led_sub = self.create_subscription(Bool, "led_cmd", self._on_led, 10)
         self._rpm_pub = self.create_publisher(Float32MultiArray, "~/wheel_rpm", 10)
         self._pwm_pub = self.create_publisher(Float32MultiArray, "~/wheel_pwm", 10)
 
@@ -72,6 +79,21 @@ class MbedDriver(Node):  # type: ignore[misc]
         self._link.send_setpoints(*setpoints)
         self._last_cmd_t = self.get_clock().now()
         self._stopped = all(v == 0.0 for v in setpoints)
+
+    def _on_servo(self, msg: Float32MultiArray) -> None:
+        """Forward a [shoulder_deg, elbow_deg] command to the arm servos.
+
+        Angle->µs calibration and the safety clamp live in
+        ``protocol.angle_to_us`` / ``format_servo_us``; a malformed
+        (non-2-element) message is ignored so it can never disturb the wheels.
+        """
+        if len(msg.data) != 2:
+            return
+        self._link.send_servo_us(angle_to_us(msg.data[0]), angle_to_us(msg.data[1]))
+
+    def _on_led(self, msg: Bool) -> None:
+        """Forward an on/off command to the on-board LED."""
+        self._link.send_led(bool(msg.data))
 
     def _check_watchdog(self) -> None:
         """Stop the wheels if no fresh cmd_vel arrived within cmd_timeout."""
