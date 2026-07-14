@@ -1,5 +1,6 @@
 """End-to-end tests: the real client modules against the in-process MockRobot
 (real sockets on all three channels)."""
+
 import asyncio
 
 from ml3_mcp import camera, record, teleop

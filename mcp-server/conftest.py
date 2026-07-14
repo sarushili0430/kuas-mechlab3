@@ -1,6 +1,7 @@
 """Shared pytest fixtures. Placed at the project root so `mock_robot` (which is
 not part of the installed package) is importable and so its directory is on
 sys.path for the test session."""
+
 import pathlib
 import socket
 import sys

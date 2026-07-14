@@ -5,6 +5,7 @@ normalized to [-1, 1]. It is fire-and-forget with no acknowledgement, and it
 zeroes motion if commands stop arriving (0.4 s hold timeout, plus a driver
 watchdog). We therefore hold a command for a bounded duration and ALWAYS finish
 with a stop, even on error."""
+
 from __future__ import annotations
 
 import asyncio

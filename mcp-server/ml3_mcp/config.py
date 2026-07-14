@@ -1,6 +1,7 @@
 """Runtime configuration for the ML3 MCP server, sourced from environment
 variables. Nothing in the robot repo supplies a host/IP, so we define our own
 knobs here. All are optional and have LAN-friendly, safety-first defaults."""
+
 from __future__ import annotations
 
 import os
@@ -61,7 +62,9 @@ class Config:
         return f"ws://{self.host}:{self.ws_port}"
 
     def stream_url(self, topic: str) -> str:
-        return f"http://{self.host}:{self.cam_port}/stream?topic={quote(topic, safe='')}"
+        return (
+            f"http://{self.host}:{self.cam_port}/stream?topic={quote(topic, safe='')}"
+        )
 
     def record_url(self, path: str) -> str:
         return f"http://{self.host}:{self.rec_port}{path}"

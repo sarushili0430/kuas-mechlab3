@@ -3,6 +3,7 @@ as tools for a local Claude. No authentication — intended for LAN-local use.
 
 Config comes from environment variables (see config.py): ML3_HOST, ML3_WS_PORT,
 ML3_CAM_PORT, ML3_REC_PORT, ML3_SPEED_SCALE, ML3_MAX_DURATION_S."""
+
 from mcp.server.fastmcp import FastMCP, Image
 
 from . import camera, record, teleop
@@ -90,7 +91,9 @@ async def record_start(
 async def record_stop(label: str | None = None, notes: str | None = None) -> dict:
     """Stop and save the current recording. label: 'success' or 'failure'
     (canonicalized server-side)."""
-    return await record.stop(CONFIG.record_url("/record/stop"), label=label, notes=notes)
+    return await record.stop(
+        CONFIG.record_url("/record/stop"), label=label, notes=notes
+    )
 
 
 @mcp.tool()

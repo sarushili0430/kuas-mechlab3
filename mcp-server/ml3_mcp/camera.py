@@ -4,6 +4,7 @@ The stream is ``multipart/x-mixed-replace`` with boundary ``ml3frame``; each
 part is a standalone JPEG carrying a ``Content-Length`` header (camera/mjpeg.py).
 There is no single-frame endpoint, so we open the stream, read until one
 complete part is available, and return its JPEG bytes."""
+
 from __future__ import annotations
 
 import httpx

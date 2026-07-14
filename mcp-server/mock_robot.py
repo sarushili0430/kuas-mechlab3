@@ -8,6 +8,7 @@ Run directly to serve on the default ports (Ctrl-C to stop):
 
 Or import ``MockRobot`` in tests. Ports of 0 are NOT auto-resolved here; pass
 explicit ports (the test suite picks free ones)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -166,9 +167,7 @@ class MockRobot:
     async def _ws_handler(self, websocket, *args):
         async for message in websocket:
             text = (
-                message.decode()
-                if isinstance(message, (bytes, bytearray))
-                else message
+                message.decode() if isinstance(message, (bytes, bytearray)) else message
             )
             try:
                 data = json.loads(text)

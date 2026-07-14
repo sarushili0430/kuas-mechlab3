@@ -4,6 +4,7 @@ Wraps GET /record/status and POST /record/{start,stop,discard}. The server
 returns JSON and uses HTTP 409 for state errors (already/not recording); we pass
 the body through and stash the status code under ``_http_status`` so the agent
 can see it."""
+
 from __future__ import annotations
 
 import httpx
@@ -48,9 +49,7 @@ async def start(
     return await _request("POST", url, body=body or None)
 
 
-async def stop(
-    url: str, *, label: str | None = None, notes: str | None = None
-) -> dict:
+async def stop(url: str, *, label: str | None = None, notes: str | None = None) -> dict:
     body: dict = {}
     if label is not None:
         body["label"] = label
