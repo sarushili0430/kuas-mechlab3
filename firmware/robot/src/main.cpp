@@ -11,15 +11,25 @@ struct MotorPins {
     PinName in2;  // 逆転側
 };
 static const MotorPins MOTOR_PINS[4] = {
-    {D7, D8},                // s1: M1 FL（PA_8 TIM1_CH1 / PA_9 TIM1_CH2）
-    {D5, D4},                // s2: M2 BL（PB_4 TIM3_CH1 / PB_5 TIM3_CH2）
-    {PA_7_ALT2, PA_6_ALT0},  // s3: M3 FR（D11 TIM17_CH1 / D12 TIM16_CH1）
-    {D2, PA_11},             // s4: M4 BR（PA_10 TIM1_CH3 / PA_11 TIM1_CH4）
+    {D7, D8},                // s1/ch0: M1（公称 FL）PA_8 TIM1_CH1 / PA_9 TIM1_CH2 — 実機物理=後左 BL
+    {D5, D4},                // s2/ch1: M2（公称 BL）PB_4 TIM3_CH1 / PB_5 TIM3_CH2 — 実機物理=前左 FL
+    {PA_7_ALT2, PA_6_ALT0},  // s3/ch2: M3（公称 FR）D11 TIM17_CH1 / D12 TIM16_CH1 — 実機物理=後右 BR
+    {D2, PA_11},             // s4/ch3: M4（公称 BR）PA_10 TIM1_CH3 / PA_11 TIM1_CH4 — 実機物理=前右 FR
 };
+
+// 各輪の正転符号: +1 なら +setpoint で前進、-1 で反転。
+// 2026-06-16 のジョグ試験でハード確定（arthur/dev で end-to-end 検証済み）。
+// 2026-07-03 基盤を上下逆に取り付けたため、全 4 輪の回転方向を反転
+// （旧 {-1,+1,-1,+1} → 全符号反転）。チャンネル⇔コーナー対応は不変。
+// 物理コーナー: ch0=後左(BL), ch1=前左(FL), ch2=後右(BR), ch3=前右(FR)。
+// 左側=ch0+ch1 / 右側=ch2+ch3 はスキッドステアの左右グルーピングと一致するので、
+// ホスト側 kinematics（s1,s2=左 / s3,s4=右）は無改修でよい。
+// 1 輪が逆回転する場合は該当 MOTOR_DIR[i] の符号を反転して再フラッシュ（scripts/pi-jog.py で確認）。
+static const int MOTOR_DIR[4] = {+1, -1, +1, -1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
-static const int   PWM_CAP      = 1500;   // ≈37.5%。突入電流・速度を抑える上限
+static const int   PWM_CAP      = 4000;   // =100%(4000/4000)。満舵で常時フルduty。電流/発熱最大、短時間で
 static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
 static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
 static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz
@@ -80,7 +90,7 @@ int main() {
                 if (sscanf(rx, "%f/%f/%f/%f", &v[0], &v[1], &v[2], &v[3]) == 4) {
                     for (int i = 0; i < 4; i++) {
                         sp[i] = v[i];
-                        motors[i].apply(int(v[i] / SP_FULL * PWM_CAP));
+                        motors[i].apply(int(MOTOR_DIR[i] * v[i] / SP_FULL * PWM_CAP));
                     }
                     cmd_timer.reset();
                 }

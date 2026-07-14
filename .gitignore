@@ -19,3 +19,6 @@ venv/
 build/
 install/
 log/
+
+# 録画した模倣学習データ（rosbag + meta.json）。容量が大きいのでコミットしない
+datasets/

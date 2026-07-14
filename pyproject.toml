@@ -49,6 +49,14 @@ ignore_missing_imports = true
 module = ["websockets.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# ultralytics (YOLOv8) is a pip-only ML dep pulled in on the robot for the
+# traffic-light detector, not the standalone lint env, so let mypy treat it as
+# untyped (same rationale as cv2 / numpy above). It is not a rosdep key, so it
+# is installed via `pip install ultralytics` rather than declared in package.xml.
+module = ["ultralytics.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 pythonpath = ["src/kuas_mechlab3"]
 testpaths = ["src/kuas_mechlab3/test"]
@@ -73,6 +81,9 @@ omit = [
     "*/camera/capture.py",
     "*/camera/camera_node.py",
     "*/camera/mjpeg_server.py",
+    "*/record_server.py",
+    "*/traffic/traffic_light_node.py",
+    "*/traffic/traffic_subscriber.py",
 ]
 
 [tool.coverage.report]

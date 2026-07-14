@@ -271,16 +271,16 @@ ros2 run kuas_mechlab3 teleop_keyboard
 | 方向 | 形式 | 例 |
 | --- | --- | --- |
 | Pi → Nucleo（指令） | `s1/s2/s3/s4/d`（float 4 つを `/` 区切り、終端は文字 `d`。改行なし） | `10.50/10.50/-10.50/-10.50/d` |
-| Nucleo → Pi（テレメトリ） | `sp .. \| rpm .. \| pwm ..` を 1 行ずつ（改行区切り） | `sp 10.50 10.50 0.00 0.00 \| rpm 0.00 0.00 0.00 0.00 \| pwm 1500 1500 0 0` |
+| Nucleo → Pi（テレメトリ） | `sp .. \| rpm .. \| pwm ..` を 1 行ずつ（改行区切り） | `sp 10.50 10.50 0.00 0.00 \| rpm 0.00 0.00 0.00 0.00 \| pwm 2500 2500 0 0` |
 
 - ボーレート **115200**、ST-Link の USB シリアル（`/dev/ttyACM0`）を使う。
-- 車輪の対応は `s1=FL（左前） / s2=BL（左後） / s3=FR（右前） / s4=BR（右後）`（`kinematics.py` と同じ）。
-- setpoint のフルスケールは **±10.5**（Pi 側の `wheel_setpoint` 既定値と揃える）。エンコーダ不動のため**オープンループ**で、`|sp|=10.5` を `PWM_CAP=1500`（分母 4000 ≈ 37.5%）の PWM に直結する。
+- 車輪の対応（公称）は `s1=FL / s2=BL / s3=FR / s4=BR`（`kinematics.py` と同じ）。スキッドステアでは **左側=s1,s2 / 右側=s3,s4** のグルーピングだけが効くので、各輪の前進向きはファーム側の符号 `DIR[4]`（`main.cpp`）で吸収する。2026-06-16 のジョグ試験で `DIR={-1,+1,-1,+1}` と確定（実機物理コーナーは ch0=後左, ch1=前左, ch2=後右, ch3=前右）。1 輪が逆回転するときは該当 `DIR[i]` を反転して再フラッシュ（下記「モーターアライメント検証」）。
+- setpoint のフルスケールは **±10.5**（Pi 側の `wheel_setpoint` 既定値と揃える）。エンコーダ不動のため**オープンループ**で、`|sp|=10.5` を `PWM_CAP=2500`（分母 4000 ≈ 62.5%）の PWM に直結する。
 - **ファーム側ウォッチドッグ入り**: 指令が 0.5 秒途絶える（USB 抜け・Pi 側クラッシュ含む）と全輪停止する。
 
 ### ピン割当（Tomoe-11 配線）
 
-実機の配線は `robot-pinout-power-reference.pdf`（Tomoe-11 — Pinout & Power Reference）が正。L298N は **ENA/ENB ジャンパ ON のまま IN ピンを直接 PWM** する（モーター 1 個につき PWM 2 本の sign-magnitude 駆動。EN ピンは使わない）:
+実機の配線は [`docs/robot-pinout-power-reference.md`](./docs/robot-pinout-power-reference.md)（PDF 版 `docs/robot-pinout-power-reference.pdf` も同梱。Tomoe-11 — Pinout & Power Reference）が正。L298N は **ENA/ENB ジャンパ ON のまま IN ピンを直接 PWM** する（モーター 1 個につき PWM 2 本の sign-magnitude 駆動。EN ピンは使わない）:
 
 | 車輪 | L298N in | はんだパッド | MCU | ファームトークン | Timer·ch |
 | --- | --- | --- | --- | --- | --- |
@@ -340,15 +340,23 @@ struct MotorPins {
     PinName in2;  // 逆転側
 };
 static const MotorPins MOTOR_PINS[4] = {
-    {D7, D8},                // s1: M1 FL（PA_8 TIM1_CH1 / PA_9 TIM1_CH2）
-    {D5, D4},                // s2: M2 BL（PB_4 TIM3_CH1 / PB_5 TIM3_CH2）
-    {PA_7_ALT2, PA_6_ALT0},  // s3: M3 FR（D11 TIM17_CH1 / D12 TIM16_CH1）
-    {D2, PA_11},             // s4: M4 BR（PA_10 TIM1_CH3 / PA_11 TIM1_CH4）
+    {D7, D8},                // s1/ch0: M1（公称 FL）PA_8 TIM1_CH1 / PA_9 TIM1_CH2 — 実機物理=後左 BL
+    {D5, D4},                // s2/ch1: M2（公称 BL）PB_4 TIM3_CH1 / PB_5 TIM3_CH2 — 実機物理=前左 FL
+    {PA_7_ALT2, PA_6_ALT0},  // s3/ch2: M3（公称 FR）D11 TIM17_CH1 / D12 TIM16_CH1 — 実機物理=後右 BR
+    {D2, PA_11},             // s4/ch3: M4（公称 BR）PA_10 TIM1_CH3 / PA_11 TIM1_CH4 — 実機物理=前右 FR
 };
+
+// 各輪の正転符号: +1 なら +setpoint で前進、-1 で反転。
+// 2026-06-16 のジョグ試験でハード確定（arthur/dev で end-to-end 検証済み）。
+// 物理コーナー: ch0=後左(BL), ch1=前左(FL), ch2=後右(BR), ch3=前右(FR)。
+// 左側=ch0+ch1 / 右側=ch2+ch3 はスキッドステアの左右グルーピングと一致するので、
+// ホスト側 kinematics（s1,s2=左 / s3,s4=右）は無改修でよい。
+// 1 輪が逆回転する場合は該当 DIR[i] の符号を反転して再フラッシュ（scripts/pi-jog.py で確認）。
+static const int DIR[4] = {-1, +1, -1, +1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
-static const int   PWM_CAP      = 1500;   // ≈37.5%。突入電流・速度を抑える上限
+static const int   PWM_CAP      = 2500;   // ≈62.5%。突入電流・速度を抑える上限
 static const int   PWM_FREQ_HZ  = 20000;  // 可聴域より上
 static const int   WATCHDOG_MS  = 500;    // 指令が途絶えたら全停止
 static const int   TELEMETRY_MS = 20;     // テレメトリ 50 Hz
@@ -409,7 +417,7 @@ int main() {
                 if (sscanf(rx, "%f/%f/%f/%f", &v[0], &v[1], &v[2], &v[3]) == 4) {
                     for (int i = 0; i < 4; i++) {
                         sp[i] = v[i];
-                        motors[i].apply(int(v[i] / SP_FULL * PWM_CAP));
+                        motors[i].apply(int(DIR[i] * v[i] / SP_FULL * PWM_CAP));
                     }
                     cmd_timer.reset();
                 }
@@ -476,13 +484,28 @@ printf '0.00/0.00/0.00/0.00/d' > /dev/ttyACM0
 
 ここまで通れば、あとは「ラズパイ実機での bring-up」どおり `mbed_driver` を起動するだけで動く。**指令を送ってもテレメトリの `pwm` が変わるのにモーターが回らない**場合は配線（EN ジャンパ・IN ピン・モーター電源 12V）側、`pwm` 自体が変わらない場合はピン割当かパケット形式のずれを疑う。
 
+### モーターアライメント検証（scripts/）
+
+各輪の前進向き（ファームの `DIR[4]`）は **`scripts/` の素のシリアルツール**で検証する。どちらも ROS 非依存（pyserial のみ）で `mbed_driver` と同じ `s1/s2/s3/s4/d` を送るため、**`mbed_driver` 停止中・車輪を浮かせて**実行する。
+
+```bash
+# 1 輪ずつ前進方向に回し、その輪のチャンネルだけが energize されるか確認
+python3 scripts/pi-jog.py 0     # 以降 1, 2, 3（ch0=後左 / ch1=前左 / ch2=後右 / ch3=前右）
+# 逆回転した輪は firmware/robot/src/main.cpp の該当 DIR[i] を反転 → 再ビルド・再フラッシュ
+
+# 全体運動の確認（left/right は REP-103 / turn_sign=+1 準拠）
+python3 scripts/pi-drivetest.py forward     # backward | left | right | stop
+```
+
+> 旋回（`a`/`d`）が逆になるのは各輪の前進向きではなく左右割当の問題なので、ファームではなく driver の `turn_sign` で直す。各輪の向きと直進が確認できたら、通常の teleop（`ros2 launch kuas_mechlab3 teleop_launch.py` / `ros2 run kuas_mechlab3 teleop_keyboard`）へ進む。
+
 ---
 
 ## ラズパイ実機での bring-up（config → デモ）
 
 配線済みの ML3 を Raspberry Pi（ROS2 Humble）から**設定 〜 デモ走行**まで動かす手順。**確認は必ず車輪を浮かせて**から行うこと（全開 PWM で台から飛び出す・突入電流が出る）。
 
-> **前提**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に上の「**Nucleo ファームウェア（mbed）**」を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=1500` ≈ 37.5%）で動く。
+> **前提**: 2× L298N + 4 モーターを配線し、モーター電源は 12V（LiPo 等、Nucleo からは取らない）。STM32 NUCLEO-F091RC に上の「**Nucleo ファームウェア（mbed）**」を書き込み済みにして Pi に USB 接続し、`/dev/ttyACM0`（115200 baud）が見える状態にしておく。現キットはエンコーダ不動のため**オープンループ**（`PWM_CAP=2500` ≈ 62.5%）で動く。
 
 ### 1. Pi の config
 
@@ -543,7 +566,7 @@ teleop のターミナルで**キーを押している間だけ**動く（離す
 
 `cmd_vel` は標準インターフェースなので、teleop の代わりに `teleop_twist_keyboard` や nav2 からも走らせられる。
 
-> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。さらに上の「Nucleo ファームウェア（mbed）」にはファーム側ウォッチドッグ（0.5s）があり、**USB が物理的に抜けても**全輪停止する。古いファームのままだと最後の指令を保持し続けるので、無拘束デモの前に必ず最新ファームを書き込み、車輪を浮かせて確認すること。初回配線時の 1 輪ずつの方向検証には、別途 bring-up 用の per-wheel jog ツール（同じ `s1/s2/s3/s4/d` パケットを送る）を driver 停止中に使う。
+> ⚠️ **安全**: Pi 側ウォッチドッグは cmd_vel が `cmd_timeout`（既定 0.4s）途絶えると全輪停止を送る（teleop が落ちても暴走しない）。さらに上の「Nucleo ファームウェア（mbed）」にはファーム側ウォッチドッグ（0.5s）があり、**USB が物理的に抜けても**全輪停止する。古いファームのままだと最後の指令を保持し続けるので、無拘束デモの前に必ず最新ファームを書き込み、車輪を浮かせて確認すること。初回配線時の 1 輪ずつの方向検証には、`scripts/pi-jog.py`（同じ `s1/s2/s3/s4/d` パケットを送る per-wheel jog ツール）を driver 停止中に使う（上記「モーターアライメント検証」）。
 
 ---
 
@@ -637,6 +660,84 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 ---
 
+## 信号機検出 (traffic)
+
+競技フィールドの**信号機を検出して状態（赤/緑/黄）を判定**し、緑のときに `traffic_light_topic` へ `〈チーム番号〉Green`（例 `11Green`）を publish する `kuas_mechlab3.traffic` サブパッケージ。ML3 のバリア課題では、この**チーム番号付きメッセージ**をオンフィールドの ROS に送ると 20 秒間バリアが開く（我々はチーム 11 なので `11Green` を送る）。`traffic_light` ノードは**カメラデバイスを直接開かず**、`camera_node` が流す `CompressedImage`（`mjpeg_server` と同じ消費側）を購読して YOLOv8 で信号機を検出し、フレームの HSV マスクのピクセル数で色を判定する。`traffic_subscriber` がそのメッセージを購読してログに出す（＝チーム番号＋色が出ていることの確認用）。
+
+> **カメラ非占有（衝突しない設計）**: デバイス `/dev/video*` は `camera_node` だけが開き、映像は ROS トピック（DDS）で共有する。`traffic_light` はそのトピックを購読するだけなので、`cameras_launch` / `start-all.sh` と**同時に動かしてもカメラ競合が起きない**。単体で使うときも `camera_node` を 1 つ上げてトピックを流せばよい。
+
+```
+[camera_node] ──/front_camera/image_raw/compressed(CompressedImage,JPEG)──> [traffic_light]
+                                                                                   │ YOLOv8 で検出 → HSV で色判定
+                                                                                   ▼
+                                     [traffic_subscriber] <──traffic_light_topic(String "11Green")── （緑ならバリアが開く）
+```
+
+責任分離（リポジトリ方針どおり、純ロジックは pytest / cv2・YOLO・ROS・I-O は colcon でテスト）:
+
+| モジュール | 責任 | テスト |
+| --- | --- | --- |
+| `light_logic.py` | 色判定（ピクセル数→色）と publish 判断 `status_message`（検出＋色→`<team><Color>` or 無出力）。**入出力契約の純ロジック** | pytest |
+| `traffic_light_node.py` | ROSノード: カメラトピック購読→JPEGデコード→YOLO検出→HSVで色判定→publish | colcon |
+| `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
+
+> **publish の判断（出力 IO）は `light_logic.status_message` に集約**し pytest で担保している。信号機が写っていない／色が曖昧（`unknown`）なフレームでは `None` を返して**何も publish しない**（誤った状態を流さない）。ノード側は「デコード→検出→`status_message`→publish」の薄い配線に徹する。
+
+> `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
+
+### 実行（ROS2 Humble 上）
+
+```bash
+colcon build --packages-select kuas_mechlab3
+source install/setup.bash
+
+# 1) カメラ映像をトピックに流す（前後カメラ + 配信をまとめて。既に start-all.sh を動かしていればこれは不要）
+ros2 launch kuas_mechlab3 cameras_launch.py front_device:=/dev/video0
+#    単体で前カメラだけ上げるなら:
+#    ros2 run kuas_mechlab3 camera_node --ros-args -r __node:=front_camera -p device:=/dev/video0
+
+# 2) 検出＋publish（前カメラのトピックを購読。チーム番号は既定 11、別チームは team_number で上書き）
+ros2 run kuas_mechlab3 traffic_light --ros-args -p team_number:=11
+
+# 3) 別ターミナルで購読して「11Green」等が出るか確認
+ros2 run kuas_mechlab3 traffic_subscriber
+```
+
+別カメラのトピックを見たいときは `-p image_topic:=/rear_camera/image_raw/compressed` のように差し替える。画面のある PC で検出フレームを見たいときは `-p show_window:=true`（`q` は使わず Ctrl+C で終了）。素の CLI でも `ros2 topic echo /traffic_light_topic` で中身を確認できる。
+
+### 主要パラメータ
+
+`traffic_light`:
+
+| 名前 | 既定 | 説明 |
+| --- | --- | --- |
+| `team_number` | `11` | メッセージ先頭に付けるチーム番号（`<team>Green` の `<team>`） |
+| `image_topic` | `/front_camera/image_raw/compressed` | 購読するカメラ（`CompressedImage`）トピック |
+| `model` | `yolov8n.pt` | YOLOv8 のモデル（初回は自動ダウンロード） |
+| `imgsz` | `256` | YOLO 推論の入力解像度（小さいほど軽い） |
+| `show_window` | `false` | 検出フレームのプレビュー窓を出すか（ヘッドレスは false のまま） |
+
+### テスト手順
+
+**1. 純ロジック（ROS 不要・PC で即実行）**
+
+色判定と publish 判断（`<team><Color>` の出力 IO 契約）は純 Python なので pytest で確認できる。
+
+```bash
+pytest src/kuas_mechlab3/test/test_light_logic.py -v
+```
+
+**2. publish の確認（ROS2 Humble・カメラ接続）** — ビルド後、上の 1)〜3) を起動し、信号機（または赤/緑/黄の色）を前カメラに映して:
+
+```bash
+ros2 topic echo /traffic_light_topic          # 緑を映すと data: "11Green" が出る
+ros2 topic echo /front_camera/image_raw/compressed --no-arr   # カメラ側が流れているかの切り分け
+```
+
+緑を映したときに `11Green` が publish されればバリア課題の要件を満たす。何も出ない場合は ① `camera_node` のトピックが流れているか（`ros2 topic hz`）、② `image_topic` が一致しているか、③ 照明や `traffic_light_node.py` の HSV しきい値、の順に切り分ける。
+
+---
+
 ## リモート teleop (WebSocket)
 
 操縦者の PC（ブラウザや手元のクライアント）から **WebSocket で `cmd_vel` を送る**ための `kuas_mechlab3.drive` の teleop ブリッジ。`teleop_server` が WS で正規化済みのドライブ指令 `{"vx", "wz"}`（各軸 -1..1）を受け取り、`teleop_keyboard` と同じく一定レートで `geometry_msgs/Twist` を `cmd_vel` に publish する。`cmd_vel` は標準インターフェースなので **`mbed_driver` / `kinematics` / ウォッチドッグには一切手を入れない**（`teleop_keyboard` をネットワーク越しにしただけ）。
@@ -650,8 +751,8 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 | モジュール | 責任 | テスト |
 | --- | --- | --- |
-| `teleop_command.py` | 純: JSON 指令の解析（不正は None）/ 正規化→物理量スケール（`utils.clamp` を再利用） | pytest |
-| `teleop_server.py` | ROSノード: WS サーバ（背景 asyncio スレッド）+ 一定レートで `cmd_vel` を publish | colcon |
+| `teleop_command.py` | 純: JSON 指令の解析（不正は None）/ 正規化→物理量スケール / 正規化指令の取り出し（`command_to_norm`、模倣学習の行動ラベル） | pytest |
+| `teleop_server.py` | ROSノード: WS サーバ（背景 asyncio スレッド）+ 一定レートで `cmd_vel`（物理量）と `cmd_norm`（正規化・時刻付き）を publish | colcon |
 | `teleop_ws_client.py` | 操縦者 PC 用の簡易 WS クライアント（WASD→WS、rclpy 非依存） | 手動 |
 
 **安全（三層・既存に上乗せ）**: ① WS 切断で次サイクルに即ゼロ（最速）② `hold_timeout`（既定 0.4s）で無入力なら減衰してゼロ ③ `mbed_driver` の `cmd_timeout` ウォッチドッグ（最終網・無変更）。WS 組み込みの ping/pong（`ping_interval`/`ping_timeout`）で、停止したクライアントの切断も検知する。
@@ -681,6 +782,17 @@ ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 ```json
 {"vx": 0.5, "wz": -0.3}
 ```
+
+### 出力トピック（`cmd_vel` と `cmd_norm`）
+
+`teleop_server` は 2 本を `publish_rate`（既定 20Hz）で出す。クライアント切断・無入力時はどちらも 0。
+
+| トピック | 型 | 中身 | 用途 |
+| --- | --- | --- | --- |
+| `cmd_vel` | `geometry_msgs/Twist` | 物理量（vx[m/s] / wz[rad/s]） | `mbed_driver` を駆動（既存） |
+| `cmd_norm` | `geometry_msgs/TwistStamped` | **正規化指令** vx=linear.x / wz=angular.z（[-1, 1]） | **模倣学習の行動ラベル**（ノードクロックの時刻付き） |
+
+`cmd_norm` は WS をまたぐ生の正規化指令そのもの（デッドゾーン適用前。`command_to_norm`）。人間も将来の AI も同じ WS スロットを埋めるので、これが**そのまま AI が出すべき値＝学習ターゲット**になる。カメラフレーム（`header.stamp`）と同一クロックの時刻が入るので、オフラインで「その瞬間に有効だった映像」と対応付けできる。publish 専用で、ノードの責任は WS→cmd_vel のまま（記録は別関心事 → `scripts/start-record.sh`。下記「自律化ロードマップ」）。
 
 ### 主要パラメータ（teleop_server）
 
@@ -785,6 +897,154 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 
 各ターミナルで `Ctrl+C`（teleop は終了時に自動で停止指令を送る）。
 
+#### 一発起動スクリプト（`scripts/`）
+
+上の「ターミナルごとに `source` してから launch を 1 つずつ」を、スクリプト 1 発に置き換えたもの。`source`（ROS2 本体 + `install/setup.bash`）・`ROS_DOMAIN_ID` の設定はスクリプト内でやるので、**素の新しいターミナルでそのまま実行してよい**（事前 `source` 不要）。前提は手動手順と同じ（`colcon build` 済み・`/dev/ttyACM0` と前後カメラが見える）。
+
+| スクリプト | 起動するもの | 待ち受け |
+| --- | --- | --- |
+| `scripts/start-teleop.sh` | テレオプ WebSocket ブリッジ（`teleop_launch.py`） | `ws://<ラズパイのIP>:9001` |
+| `scripts/start-cameras.sh` | 前後カメラ + MJPEG 配信（`cameras_launch.py`） | `http://<ラズパイのIP>:8080/` |
+| `scripts/start-all.sh` | driver + カメラ + teleop + 録画 + 信号機を 1 プロセスで束ねて起動 | 上記 + 録画/信号機トピック |
+| `scripts/start-record.sh` | 人間のデモ走行を 1 エピソードずつ rosbag に記録（模倣学習データ収集） | `datasets/raw/` に保存 |
+| `scripts/lib-ros-env.sh` | 共通の環境セットアップ（各スクリプトが `source` する。直接は実行しない） | — |
+
+共通の上書き用環境変数（どのスクリプトでも効く）:
+
+| 環境変数 | 既定値 | 意味 |
+| --- | --- | --- |
+| `ROS_DOMAIN_ID` | `11` | DDS ドメイン。**PC 側で別ノードを動かすなら合わせる**（手動手順と同じ） |
+| `ROS_SETUP` | `/opt/ros/humble/setup.bash` | ROS2 本体の `setup.bash`。Humble 以外を使うとき用 |
+
+**`scripts/start-teleop.sh`** — テレオプだけ（driver もカメラも既に動いている時に、ブリッジだけ立て直したい等）。
+
+```bash
+./scripts/start-teleop.sh
+# launch 引数はそのまま渡せる（teleop_launch.py の DeclareLaunchArgument）:
+./scripts/start-teleop.sh port:=9001 max_linear:=0.5 max_angular:=2.0
+```
+
+**`scripts/start-cameras.sh`** — カメラ + 映像配信だけ。device は環境変数で、その他は launch 引数で渡す。
+
+```bash
+./scripts/start-cameras.sh
+# 前後カメラの device を変える（既定は front=/dev/video0 rear=/dev/video2。ls /dev/video* で確認）:
+FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 ./scripts/start-cameras.sh
+# 解像度・FPS は launch 引数で:
+./scripts/start-cameras.sh width:=640 height:=480 fps:=15.0 stream_fps:=15.0
+```
+
+**`scripts/start-all.sh`** — driver + カメラ + teleop + 録画 + 信号機を 1 発。5 つの launch を束ねて起動し、**`Ctrl+C` で全ノードへ停止指令を送ってまとめて落とす**。実機オペレーションの通常運用はこれ 1 本でよい。
+
+```bash
+./scripts/start-all.sh
+# カメラ device / 信号機のチーム番号の上書きはそのまま効く:
+FRONT_DEVICE=/dev/video0 REAR_DEVICE=/dev/video2 TEAM_NUMBER=11 ./scripts/start-all.sh
+```
+
+> `start-all.sh` は 5 つの launch をまとめるため、個別の launch 引数（`port:=` など）は受け取らない。上書きは環境変数（`FRONT_DEVICE` / `REAR_DEVICE` / `ROUTE` / `OPERATOR` / `TEAM_NUMBER`）で行うか、各 launch ファイルの既定値を直す／個別スクリプトを使う。
+
+**boot 時から常駐（systemd） — `scripts/kuas-mechlab3.service`** — 競技運用で **電源を入れたらスタック一式（信号機検出も含む）が自動で上がる**ようにするには、`start-all.sh` を systemd サービスとして登録する。ユニット定義を [`scripts/kuas-mechlab3.service`](./scripts/kuas-mechlab3.service) に用意してある（`User=` と 2 つのパスを実機に合わせて編集する）。
+
+```bash
+sudo cp scripts/kuas-mechlab3.service /etc/systemd/system/
+sudoedit /etc/systemd/system/kuas-mechlab3.service   # User= / WorkingDirectory= / ExecStart= を実機に合わせる
+sudo systemctl daemon-reload
+sudo systemctl enable --now kuas-mechlab3.service     # 今すぐ起動 + 次回 boot から常駐
+journalctl -u kuas-mechlab3 -f                        # ログ追跡
+sudo systemctl stop kuas-mechlab3                     # 一時停止（start-all.sh が子を掃除して停止）
+```
+
+> 信号機検出は `ultralytics`（YOLOv8）が要る。boot 常駐にする前に `pip install ultralytics` と **モデル `yolov8n.pt` の事前ダウンロード**（初回実行が取得するので一度オンラインで走らせておく）を済ませること。オフライン会場で初回 DL に失敗すると信号機ノードだけ上がらない。
+
+**`scripts/start-record.sh`** — 人間のデモ走行を **1 エピソード = 1 bag + `meta.json`** で記録する（模倣学習のデータ収集 / 下記「自律化ロードマップ」Phase 2）。先に driver・カメラ・teleop を起動しておく（別ターミナル or `start-all.sh`）。記録するのは `/cmd_norm`（行動ラベル）+ 前後カメラ + `cmd_vel` / 車輪テレメトリ。
+
+```bash
+# 先に別ターミナルで start-all.sh（driver + カメラ + teleop）を起動しておく
+./scripts/start-record.sh --route route_a --operator koyu
+#   各エピソード: [Enter]=録画開始 → ルートを走る → [Enter]=保存（成功/失敗ラベル）/ d=破棄
+#   後カメラや車輪テレメトリを省くとき: --no-rear / --no-state
+```
+
+> 保存先は既定 `datasets/raw/<日時>_<route>_NNN/`（`.gitignore` 済み＝コミットされない）。`meta.json` に行動トピック・映像トピック・成功失敗ラベルが入るので、次の「データセット変換」（Phase 3）はこれだけ見れば変換できる。`ros2 bag` には `ros-humble-rosbag2`（`package.xml` で宣言済み・`rosdep` で入る）が要る。
+
+PC 側（操縦者）の手順は上の **B.** と同じ（`docs/cockpit.html` を開くだけ）。映像だけなら `http://<ラズパイのIP>:8080/` を直接開く。
+
+---
+
+## 自律化ロードマップ（LLM が teleop を習得するまで）
+
+固定ルートを人間のテレオプで走らせ、その **(映像, 操作) ログ**から視覚運動ポリシー（ACT / VLA 等）を**模倣学習**し、最終的に **AI が人間と同じ WebSocket スロットから `{"vx","wz"}` を出して全自動運転する**ところまでの段取り。要は **AI は人間のテレオプ・クライアントを「差し替える」だけ**で、`teleop_server` 以降（`cmd_vel` → `mbed_driver` → mbed → 安全機構）には一切手を入れない。
+
+> 📋 **AI 向けのフェーズ別・詳細な実行計画は [`docs/autonomy-plan.md`](./docs/autonomy-plan.md)**。本節はその俯瞰。**学習・推論の AI 部分は別リポ（`mechlab3-policy` 想定・ROS 非依存）**に分け、本リポは Pi 側・データ収集・契約（schema / WS プロトコル）を担当する。
+
+**設計の要（なぜこの形か）**
+
+- **学習ターゲット = `/cmd_norm`**（WS 境界の正規化指令 [-1, 1]）。人間も AI も同じスロットを埋めるので、ログするのはスケール後の `cmd_vel` ではなく **AI の出力空間そのもの**である `/cmd_norm`。→ 学習と推論が対称になる。
+- **推論はロボットに載せない**。別 PC（GPU）で policy を回し、MJPEG 映像を入力に `/cmd_norm` 相当を WS 送信する。`teleop_server` の `hold_timeout` と mbed のウォッチドッグがそのまま安全網として効く（policy がハングしても止まる）。
+- **基盤はモデル非依存**。Phase 1–3 で作る (映像, 行動) データセットは、ACT でも VLA でも同じものを使える。だからモデル選定は後でいくらでも差し替えられる。
+
+| Phase | 状態 | 中身 | 成果物 |
+| --- | --- | --- | --- |
+| **1. 行動の publish** | ✅ 実装済 | `teleop_server` が正規化指令をカメラと同一クロックの時刻付きで publish | トピック `/cmd_norm`（`TwistStamped`, vx=linear.x / wz=angular.z, [-1, 1]） |
+| **2. エピソード録画** | ✅ 実装済 | `ros2 bag` を 1 走行 = 1 bag + `meta.json`（ルート / 操縦者 / 成功失敗ラベル）でラップ | `scripts/start-record.sh` → `datasets/raw/<日時>_<route>_NNN/` |
+| **3. データセット変換** | ⬜ 次 | bag → 固定 Hz（例 10Hz）にリサンプル・同期して映像を mp4 化し **[LeRobot](https://github.com/huggingface/lerobot) 形式**へ。映像に行動を重ねて同期を目視検証 | `datasets/lerobot/`（parquet + mp4 + meta） |
+| **4. データ収集（走行）** | ⬜ | ルートを**条件を散らして** 20〜50 本／ルート。**わざとコースから外して戻すリカバリ走行を必ず混ぜる**（分布ズレ対策） | ラベル付き bag 群 |
+| **5. 学習（finetune）** | ⬜ | LeRobot で **ACT**（Action Chunking Transformer）を baseline に finetune。GPU は別 PC 1 枚で足りる | 学習済みポリシー |
+| **6. 閉ループ評価 + 再収集** | ⬜ | オフライン loss ではなく**実機で成功率**を見る → 失敗パターンのリカバリ走行を足して再学習（簡易 DAgger） | 評価結果 / 改善版ポリシー |
+| **7. デプロイ（自律運転）** | ⬜ | 別 GPU 機で policy-runner: MJPEG 入力 → `{"vx","wz"}` を `ws://<pi>:9001` へ送信（**人間クライアントの差し替え**）。即時オーバーライド（デッドマン）を併設 | 自律走行 |
+
+**落とし穴（先に潰しておく）**
+
+- **同期が全て**: カメラ（`header.stamp`）と `/cmd_norm`（`header.stamp`）を同一 Pi クロックで取り、後処理で固定 Hz にリサンプルして「最新フレーム × その時有効だった行動」を対にする。ブラウザ側ではログしない（時計ズレを持ち込む）。
+- **分布ズレ / 雪だるま誤差**: 上手い走行だけ集めると、本番でわずかにズレた瞬間に未知の状態へ入って破綻する。Phase 4 のリカバリ走行が成功率を左右する。
+- **遅延**: オフボード推論のネットワーク往復は、ACT の**アクションチャンク**（先の数ステップをまとめて予測してオープンループ実行）で隠せる。
+- **解像度**: teleop 配信は 320x240 だが、学習用にはキャプチャ解像度を上げてもよい（配信と収集の解像度は分離できる）。
+
+**モデルは 1 つに絞らない（両方向キープ）**: LeRobot 形式（Phase 3 の出力）にしておけば、**ACT（ゼロ学習）も SmolVLA（事前学習を finetune）も同じデータセットを 1 フラグで切替**できる（`--policy.type=act` ↔ `--policy.path=lerobot/smolvla_base`）。固定単一ルートで軽さ・低レイテンシ重視なら ACT、少データ・頑健性・将来の言語指示なら SmolVLA。データを録り直す必要はない（基盤がモデル非依存なのが Phase 1–3 の狙い）。
+
+### 推論時の制御ループ（WebSocket 越し）
+
+学習済みモデルは**ロボットには載せず、別 PC（GPU）で「WebSocket クライアント」として動く** — `teleop_ws_client`（人間の WASD 送信）の**人間部分をモデルに差し替えるだけ**で、`teleop_server` 以降は無変更。つまり「**AI が WebSocket 経由で制御する**」= モデルが人間と同じ `{"vx","wz"}` を `ws://<pi>:9001` に流すこと。**モデルの種類（ACT でも VLA でも）はこの WS インターフェースとは独立**で、出口は常に `{"vx","wz"}`。
+
+```
+[GPU PC]  カメラ映像（MJPEG http://<pi>:8080）を入力
+   └─ policy(画像) → (vx, wz) のアクションチャンクを予測
+        └─ {"vx":.., "wz":..} を ws://<pi>:9001 へ 10–20Hz 送信   ← 人間と同じスロット
+[Pi]  teleop_server → cmd_vel → mbed_driver → mbed
+        （hold_timeout / mbed ウォッチドッグがそのまま安全網。policy が固まっても停止）
+```
+
+policy-runner（Phase 7 で実装する擬似コード。中身は「人間の代わりに推論結果を送る WS クライアント」）:
+
+```python
+ws = websocket.connect("ws://<pi>:9001")
+while True:
+    frame = grab_latest_jpeg("http://<pi>:8080/stream?topic=/front_camera/image_raw/compressed")
+    chunk = policy.select_action(preprocess(frame))   # (vx, wz) の系列を予測
+    vx, wz = chunk[0]                                  # or temporal ensemble
+    ws.send(json.dumps({"vx": float(vx), "wz": float(wz)}))
+    sleep(1 / CONTROL_HZ)
+```
+
+学習ターゲットを `/cmd_norm`（= この `{vx,wz}` そのもの）にしたのは、ここで**人間とモデルの出力空間を一致させる**ため。
+
+### 学習レシピ（何を・どう学習するか）
+
+| 項目 | **ACT**（ゼロ学習） | **SmolVLA**（finetune） |
+| --- | --- | --- |
+| 種別 | Action Chunking Transformer（ResNet 画像エンコーダ + Transformer + CVAE, ~80M） | 軽量 VLA（視覚 + 言語 + 行動, ~450M。事前学習済みを finetune） |
+| 観測 | 前カメラ画像（+ 後カメラ）。固定ルートなので状態は最小（無 or 直前の行動を state に） | 同上 + 言語命令（単一挙動なら定数 `"follow the route"`） |
+| 行動 | `(vx, wz)` を**チャンク**で出力（例: 10Hz で 10–20 ステップ ＝ 1–2 秒先まで） | 同上 |
+| データ | LeRobot 形式（Phase 3 の出力）: `observation.images.front` + `action = (vx, wz)` | 同上 |
+| 学習 | `lerobot` の `train.py`（`policy=act`）。10–20 万 step / batch 8 / GPU 1 枚 / 数時間 | `policy=smolvla` で事前学習から finetune。VRAM 多め・遅い |
+| 推論速度 | ms オーダー（10–20Hz 余裕） | 重い。アクションチャンクで遅延を吸収して 5–10Hz |
+| 使いどき | **単一固定ルートに最適。まずこれ** | 言語指定・複数ルート・汎化が欲しくなったら |
+
+**手順**: ① データ収集（Phase 4）→ LeRobot 形式へ変換（Phase 3） ② `lerobot` を入れて ACT を上記設定で finetune ③ **閉ループ評価**（実機で成功率を見る。オフライン loss は当てにしない） ④ 失敗パターンのリカバリ走行を追加収集 → 再学習（簡易 DAgger） ⑤ policy-runner（上の擬似コード）で WS 越しにデプロイ。
+
+> **「LLM で制御」したい場合**: ここでの "LLM 系" は **SmolVLA**（言語も食える VLA）を指す。ACT は厳密には LLM ではないが、**WS 越しに `{vx,wz}` を出す役割は全く同じ**。固定・単一ルートなら ACT が速くて確実、言語条件付けが要るなら SmolVLA、という住み分け（どちらも Phase 1–3 の同じデータセットで学習できる）。
+
 ---
 
 ## ディレクトリ構成
@@ -797,6 +1057,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 │       ├── kuas_mechlab3/    # パッケージ本体（Python ソース）
 │       │   ├── __init__.py
 │       │   ├── utils.py      # 純 Python のヘルパー（例: clamp）
+│       │   ├── recording.py  # 純: 録画エピソードの配置 / メタデータ・スキーマ
 │       │   ├── drive/        # ML3 ドライブトレイン（下記「ドライブトレイン」参照）
 │       │   │   ├── kinematics.py       # 純: Twist→4輪ミキシング
 │       │   │   ├── protocol.py         # 純: ワイヤ形式 / テレメトリ解析
@@ -806,18 +1067,34 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 │       │   │   ├── teleop_keyboard.py  # ROSノード: キー→cmd_vel
 │       │   │   ├── teleop_server.py    # ROSノード: WS→cmd_vel
 │       │   │   └── teleop_ws_client.py # 操縦者PC用の簡易 WS クライアント
-│       │   └── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
-│       │       ├── frame.py           # 純: FOURCC / デバイス解決
-│       │       ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
-│       │       ├── capture.py         # cv2 デバイス I/O
-│       │       ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
-│       │       └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
-│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop）
+│       │   ├── camera/       # 前後 Web カメラ（下記「前後カメラ」参照）
+│       │   │   ├── frame.py           # 純: FOURCC / デバイス解決
+│       │   │   ├── mjpeg.py           # 純: MJPEG over HTTP フレーミング
+│       │   │   ├── capture.py         # cv2 デバイス I/O
+│       │   │   ├── camera_node.py     # ROSノード: webcam→JPEG→image_raw/compressed
+│       │   │   └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
+│       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
+│       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
+│       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
+│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
 │       ├── setup.py          # ament_python のパッケージ設定
 │       └── setup.cfg
-├── docs/                     # 補足ドキュメント（teleop-client.md / 操縦 UI の cockpit.html）
+├── firmware/
+│   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
+├── docs/                     # 補足ドキュメント（autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
+├── scripts/                  # bring-up 用スクリプト
+│   ├── start-all.sh          # driver + カメラ + teleop + 録画 + 信号機を一発起動（Ctrl+C で一括停止）
+│   ├── kuas-mechlab3.service # 上を boot 時から常駐させる systemd ユニット定義
+│   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
+│   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
+│   ├── start-record.sh       # デモ走行を rosbag 録画（模倣学習データ収集）
+│   ├── record_episodes.py    # 上の中身: エピソード録画ループ（subprocess=ros2 bag）
+│   ├── lib-ros-env.sh        # 上記が source する共通 ROS 環境セットアップ
+│   ├── pi-jog.py             # per-wheel 方向検証（ROS 非依存・pyserial のみ）
+│   └── pi-drivetest.py       # 4 輪まとめ駆動テスト（同上）
 ├── .python-version           # Python のバージョン固定（3.10.18）
 ├── pyproject.toml            # black / mypy / pytest / coverage / commitizen 設定
 ├── requirements.txt          # 純 Python のランタイム依存
