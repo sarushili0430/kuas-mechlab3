@@ -25,7 +25,9 @@ static const MotorPins MOTOR_PINS[4] = {
 // 左側=ch0+ch1 / 右側=ch2+ch3 はスキッドステアの左右グルーピングと一致するので、
 // ホスト側 kinematics（s1,s2=左 / s3,s4=右）は無改修でよい。
 // 1 輪が逆回転する場合は該当 MOTOR_DIR[i] の符号を反転して再フラッシュ（scripts/pi-jog.py で確認）。
-static const int MOTOR_DIR[4] = {+1, -1, +1, -1};
+// 2026-07-15 この機体で全輪ジョグ再検証: ch0(後左)と ch3(前右)が逆転していたため両符号を反転
+// （{+1,-1,+1,-1} → {-1,-1,+1,+1}）。機体固有の配線差につき friend の develop とは意図的に相違。
+static const int MOTOR_DIR[4] = {-1, -1, +1, +1};
 
 static const float SP_FULL      = 10.5f;  // Pi 側 wheel_setpoint と揃える
 static const int   PWM_MAX      = 4000;   // pwm テレメトリの分母
