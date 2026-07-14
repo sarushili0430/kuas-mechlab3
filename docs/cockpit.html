@@ -1,112 +1,285 @@
 <!doctype html>
 <!--
-  ML3 リモート操縦コックピット（前後カメラ映像 + WASD 操縦）
+  ML3 リモート操縦コックピット（前後カメラ + WASD 操縦 + アーム/LED）— ブルーテーマ版
 
   使い方（操縦者の PC、ROS は不要）:
-    1) このファイルを PC にコピー
-    2) 下の  const PI = ... "192.168.1.64"  の IP をラズパイの IP に書き換えて保存
-    3) ダブルクリックで開く（file://）。※ HTTPS 配信は混在コンテンツでブロックされる
-    4) ページをクリックしてフォーカス → W/A/S/D で操縦（離す・閉じると停止）
-    5) アーム: 肩/肘スライダで角度指令（0–180°, 保持）／ LED: チェックで on/off
+    1) ブラウザで  http://<ラズパイIP>:8000/  を開く（Pi が配信）。file:// でも可。
+    2) 右上のホスト欄でラズパイIP を変更→「適用」で再接続。既定は開いた網のホスト。
+    3) 画面をクリックしてフォーカス → W/A/S/D で操縦（離す・切断で停止）。
+    4) アーム: ▲▼ボタン（5°）／ home で 90/90 ／ 矢印キー ←→=肩 ↑↓=肘（押下中は連続、離すと保持）。
+    5) LED: on/off ボタン。動きは目標へイージング（滑らかに追従）。
 
   前提（ラズパイ側）: cameras_launch.py（:8080）と teleop_launch.py（:9001）が起動済み。
 -->
 <html lang="ja">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ML3 cockpit</title>
   <style>
-    body { background:#111; color:#eee; font-family:sans-serif; text-align:center }
-    figure { display:inline-block; margin:8px }
-    img { width:48vw; max-width:640px; border:1px solid #444; background:#000 }
-    #status { padding:6px; font-weight:bold }
-    #arm { padding:10px; font-size:15px }
-    #arm label { margin:0 10px }
-    #arm input[type=range] { vertical-align:middle; width:220px }
+    :root{
+      --bg:#0a0e1a; --bg2:#070b14; --panel:#121a30; --panel2:#0d1424; --line:#26314e;
+      --blue:#5b8def; --blue2:#7aa2ff; --green:#31d67a; --amber:#f5a623; --red:#ff6b6b;
+      --txt:#e6ebf5; --muted:#8792ad; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0}
+    body{background:radial-gradient(1200px 600px at 50% -10%,#101830 0%,var(--bg) 55%,var(--bg2) 100%);
+         color:var(--txt);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
+
+    /* ---- header ---- */
+    header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+           padding:14px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+    .brand{display:flex;align-items:center;gap:14px}
+    .brand .ico{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;
+                background:linear-gradient(160deg,#1b2748,#28376a);border:1px solid #33477e}
+    .brand .ico svg{width:24px;height:24px;stroke:var(--blue2);fill:none;stroke-width:2}
+    .brand h1{margin:0;font-family:var(--mono);font-size:22px;letter-spacing:4px;font-weight:700}
+    .brand .sub{color:var(--muted);font-size:12px;margin-top:3px;letter-spacing:.5px}
+    .hdr-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    .pill{display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--line);
+          border-radius:999px;padding:9px 16px;font-size:13px;white-space:nowrap}
+    .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);transition:.2s}
+    .dot.ok{background:var(--green);box-shadow:0 0 9px var(--green)}
+    .dot.bad{background:var(--red)}
+    .host{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:13px}
+    .host input{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:10px;
+                padding:9px 12px;font-family:var(--mono);font-size:14px;width:132px;outline:none}
+    .host input:focus{border-color:var(--blue)}
+    .btn{background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:10px;
+         padding:9px 15px;cursor:pointer;font-size:13px;transition:.15s}
+    .btn:hover{border-color:var(--blue);color:#fff}
+    .btn:active{transform:translateY(1px)}
+
+    /* ---- cameras ---- */
+    .cams{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px 22px}
+    .cam{position:relative;background:#000;border:1px solid var(--line);border-radius:16px;
+         aspect-ratio:4/3;overflow:hidden}
+    .cam img{width:100%;height:100%;object-fit:contain;display:block}
+    .cam .live{position:absolute;top:12px;left:14px;display:flex;align-items:center;gap:8px;
+               font-family:var(--mono);font-size:13px;letter-spacing:2px;color:var(--muted)}
+    .cam .live .dot{background:var(--muted)}
+    .cam.on .live{color:var(--green)} .cam.on .live .dot{background:var(--green);box-shadow:0 0 9px var(--green)}
+    .cam .side{position:absolute;top:11px;right:14px;font-size:14px;color:var(--txt);
+               background:rgba(10,14,26,.55);padding:3px 9px;border-radius:8px}
+    .cam .reticle{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}
+    .cam .reticle i{display:block;width:20%;aspect-ratio:1;border:1.5px solid var(--blue);border-radius:50%;opacity:.45}
+
+    /* ---- control bar ---- */
+    .ctrl{display:flex;align-items:center;gap:26px;padding:6px 22px 6px;flex-wrap:wrap}
+    .wasd{display:grid;grid-template-columns:repeat(3,44px);grid-auto-rows:44px;gap:7px;
+          justify-content:center}
+    .key{grid-column:auto;display:grid;place-items:center;background:var(--panel2);border:1px solid var(--line);
+         border-radius:10px;font-family:var(--mono);font-weight:700;color:var(--muted);transition:.1s}
+    .key.w{grid-column:2} .key.a{grid-column:1} .key.s{grid-column:2} .key.d{grid-column:3}
+    .key.active{background:var(--blue);color:#fff;border-color:var(--blue2);box-shadow:0 0 12px rgba(91,141,239,.6)}
+    .axes{flex:1;min-width:280px}
+    .axis{display:flex;align-items:center;gap:14px;margin:9px 0}
+    .axis .lab{color:var(--muted);width:74px;font-size:13px}
+    .axis .lab b{color:var(--txt);font-family:var(--mono)}
+    .bar{flex:1;height:9px;background:var(--panel2);border-radius:6px;position:relative;overflow:hidden;border:1px solid var(--line)}
+    .bar::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)}
+    .bar .fill{position:absolute;top:0;bottom:0;left:50%;width:0;background:linear-gradient(90deg,var(--blue),var(--blue2));transition:.06s linear}
+    .axis .val{font-family:var(--mono);width:60px;text-align:right;color:var(--txt);font-size:14px}
+    .connect{background:var(--amber);color:#20160a;border:none;border-radius:12px;padding:14px 26px;
+             font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:9px;transition:.15s}
+    .connect:hover{filter:brightness(1.07)} .connect:active{transform:translateY(1px)}
+    .connect.live{background:var(--panel);color:var(--green);border:1px solid var(--green)}
+
+    /* ---- arm panel ---- */
+    .arm{margin:6px 22px 4px;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+         padding:12px 18px;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+    .arm .title{font-family:var(--mono);letter-spacing:2px;color:var(--blue2);font-size:13px}
+    .arm .grp{display:flex;align-items:center;gap:9px}
+    .arm .lbl{color:var(--muted);font-size:14px;min-width:5.8em;text-align:right}
+    .arm b{display:inline-block;min-width:2.6em;text-align:center;font-family:var(--mono);font-size:15px}
+    .arm button{font-size:16px;min-width:2.5em;padding:5px 11px;background:var(--panel2);color:var(--txt);
+                border:1px solid var(--line);border-radius:9px;cursor:pointer;transition:.12s}
+    .arm button:hover{border-color:var(--blue)} .arm button:active{background:var(--blue);border-color:var(--blue2)}
+    .arm .home{color:var(--blue2);border-color:#33477e}
+    .arm .led-on{color:var(--green)} .arm .led-off{color:var(--muted)}
+    .arm .sep{width:1px;align-self:stretch;background:var(--line)}
+    .arm .hint{color:var(--muted);font-size:12px}
+
+    footer{color:var(--muted);font-size:12.5px;padding:8px 22px 22px;text-align:center}
+    @media(max-width:820px){.cams{grid-template-columns:1fr}.brand h1{font-size:19px;letter-spacing:2px}}
   </style>
 </head>
 <body>
-  <h1>ML3 cockpit</h1>
-  <div id="status">WS: connecting…</div>
-  <div>
-    <figure><figcaption>front</figcaption><img id="front" alt="front"></figure>
-    <figure><figcaption>rear</figcaption><img id="rear" alt="rear"></figure>
-  </div>
-  <p>このページにフォーカスして <b>W/A/S/D</b> で操縦（離すと停止）</p>
+  <header>
+    <div class="brand">
+      <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="10" r="3"></circle><path d="M12 13v6M7 21h10M5 9a7 7 0 0 1 14 0"></path></svg></div>
+      <div><h1>ML3 COCKPIT</h1><div class="sub">KUAS MechLab3 遠隔操縦</div></div>
+    </div>
+    <div class="hdr-right">
+      <div class="pill"><span class="dot" id="wsdot"></span><span id="wstext">WS 未接続</span></div>
+      <div class="host">接続先ホスト <input id="host" spellcheck="false"></div>
+      <button class="btn" id="apply">適用</button>
+    </div>
+  </header>
 
-  <!-- アーム（2軸サーボ）+ LED: ドライブとは別メッセージ、同じ WS 経由で送る -->
-  <div id="arm">
-    <label>肩 shoulder <span id="shv">90</span>°
-      <input type="range" id="sh" min="0" max="180" value="90"></label>
-    <label>肘 elbow <span id="elv">90</span>°
-      <input type="range" id="el" min="0" max="180" value="90"></label>
-    <label>LED <input type="checkbox" id="led"></label>
+  <div class="cams">
+    <div class="cam" id="cam-front">
+      <img id="front" alt="front">
+      <div class="live"><span class="dot"></span>LIVE</div>
+      <div class="side">前方</div>
+      <div class="reticle"><i></i></div>
+    </div>
+    <div class="cam" id="cam-rear">
+      <img id="rear" alt="rear">
+      <div class="live"><span class="dot"></span>LIVE</div>
+      <div class="side">後方</div>
+      <div class="reticle"><i></i></div>
+    </div>
   </div>
+
+  <div class="ctrl">
+    <div class="wasd">
+      <div class="key w" id="key-w">W</div>
+      <div class="key a" id="key-a">A</div>
+      <div class="key s" id="key-s">S</div>
+      <div class="key d" id="key-d">D</div>
+    </div>
+    <div class="axes">
+      <div class="axis"><span class="lab">前後 <b>vx</b></span><div class="bar"><div class="fill" id="bar-vx"></div></div><span class="val" id="val-vx">+0.00</span></div>
+      <div class="axis"><span class="lab">旋回 <b>wz</b></span><div class="bar"><div class="fill" id="bar-wz"></div></div><span class="val" id="val-wz">+0.00</span></div>
+    </div>
+    <button class="connect" id="connect">⚡ 接続</button>
+  </div>
+
+  <!-- アーム（2軸サーボ）+ LED: ドライブとは別メッセージ、同じ WS 経由。動きは JS 側でイージング。 -->
+  <div class="arm" id="arm">
+    <span class="title">ARM</span>
+    <div class="grp"><span class="lbl">肩 shoulder</span>
+      <button data-joint="0" data-dir="-1">▼</button><b id="shv">90</b>°<button data-joint="0" data-dir="1">▲</button></div>
+    <div class="grp"><span class="lbl">肘 elbow</span>
+      <button data-joint="1" data-dir="-1">▼</button><b id="elv">90</b>°<button data-joint="1" data-dir="1">▲</button></div>
+    <button class="home" id="home">home 90/90</button>
+    <div class="sep"></div>
+    <div class="grp"><span class="lbl">LED</span>
+      <button class="led-on" id="ledon">on</button><button class="led-off" id="ledoff">off</button><b id="ledv">off</b></div>
+    <span class="hint">キー: ←→ 肩 ／ ↑↓ 肘（押下中は連続回転）</span>
+  </div>
+
+  <footer id="foot">この画面にフォーカスして <b>W / A / S / D</b> で操縦（キーを離すと停止・切断時も機体は自動停止）。アームは ▲▼ボタン・矢印キーで。</footer>
 
   <script>
-    // ★ ラズパイの IP に合わせる（file:// で開くと下の PI 値が使われる）。
-    //    工房WiFi=192.168.1.64 ／ 競技は従来の ml3 WiFi(192.168.50.x)。開く網に合わせて設定。
-    const PI = location.hostname || "192.168.1.64";
+    const $ = id => document.getElementById(id);
     const CAM_PORT = 8080, WS_PORT = 9001;
     const FRONT = "/front_camera/image_raw/compressed";
     const REAR  = "/rear_camera/image_raw/compressed";
-    const LINEAR = 1.0, ANGULAR = 1.0, RATE_HZ = 20;  // 正規化軸の最大と送信レート
+    const LINEAR = 1.0, ANGULAR = 1.0, RATE_HZ = 20;   // 正規化軸の最大と送信レート
+    const STEP = 5;                                    // ボタン 1 クリックの角度（度）
+    const ARM_KEY_STEP = 1.5;                          // 矢印キー 1 tick の角度（約 20Hz）
+    let ELBOW_CCW = 1, SHOULDER_CCW = 1;               // CCW=角度+ なら 1（実機校正で確定・現状は既定でOK）
+    let PI = location.hostname || "192.168.1.64";
+    host.value = PI;
 
-    // 1) カメラ: <img> に stream URL を入れるだけ（JS で画像処理はしない）
-    front.src = `http://${PI}:${CAM_PORT}/stream?topic=${FRONT}`;
-    rear.src  = `http://${PI}:${CAM_PORT}/stream?topic=${REAR}`;
+    // 1) カメラ: <img> に stream URL を入れる。読み込めたら LIVE を点灯。
+    function loadCams(){
+      front.src = `http://${PI}:${CAM_PORT}/stream?topic=${FRONT}`;
+      rear.src  = `http://${PI}:${CAM_PORT}/stream?topic=${REAR}`;
+    }
+    front.onload = () => $("cam-front").classList.add("on");
+    front.onerror = () => $("cam-front").classList.remove("on");
+    rear.onload  = () => $("cam-rear").classList.add("on");
+    rear.onerror = () => $("cam-rear").classList.remove("on");
+    loadCams();
 
-    // 2) 入力: 押下中のキー集合から目標軸を計算
+    // 2) 入力: 押下中のキー集合。矢印はページスクロールを抑止。
     const keys = new Set();
-    addEventListener("keydown", e => keys.add(e.key.toLowerCase()));
+    addEventListener("keydown", e => { keys.add(e.key.toLowerCase()); if (e.key.startsWith("Arrow")) e.preventDefault(); });
     addEventListener("keyup",   e => keys.delete(e.key.toLowerCase()));
-    addEventListener("blur", () => keys.clear());   // ウィンドウ非アクティブで停止
-    function currentAxes() {
+    addEventListener("blur", () => keys.clear());
+    function currentAxes(){
       let vx = 0, wz = 0;
       if (keys.has("w")) vx += LINEAR;
       if (keys.has("s")) vx -= LINEAR;
-      if (keys.has("a")) wz += ANGULAR;             // +wz = 左旋回 (REP-103)
+      if (keys.has("a")) wz += ANGULAR;   // +wz = 左旋回 (REP-103)
       if (keys.has("d")) wz -= ANGULAR;
       return { vx, wz };
     }
 
-    // 3) WebSocket: 接続 + 自動再接続
-    let ws = null;
-    const setStatus = t => status.textContent = t;
-    function connect() {
+    // 3) WebSocket: 接続 + 自動再接続、状態をヘッダ/接続ボタンに反映。
+    let ws = null, retry = null;
+    function setWs(state){                // "ok" | "bad" | "wait"
+      const dot = $("wsdot"), txt = $("wstext"), cb = $("connect");
+      dot.className = "dot" + (state === "ok" ? " ok" : state === "bad" ? " bad" : "");
+      txt.textContent = state === "ok" ? `接続 (${PI})` : state === "wait" ? "接続中…" : "WS 未接続";
+      cb.classList.toggle("live", state === "ok");
+      cb.textContent = state === "ok" ? "● 接続中" : "⚡ 接続";
+    }
+    function connect(){
+      clearTimeout(retry);
+      if (ws) { try { ws.onclose = null; ws.close(); } catch(e){} }
+      setWs("wait");
       ws = new WebSocket(`ws://${PI}:${WS_PORT}`);
-      ws.onopen  = () => setStatus(`WS: connected (${PI}:${WS_PORT})`);
-      ws.onclose = () => { setStatus("WS: closed — retrying…"); setTimeout(connect, 1000); };
+      ws.onopen  = () => setWs("ok");
+      ws.onclose = () => { setWs("bad"); retry = setTimeout(connect, 1000); };
       ws.onerror = () => ws.close();
     }
+    const send = o => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); };
     connect();
 
-    // 4) 一定レートで「今の目標速度」を送り続ける（ハートビート）
+    // 4) ドライブ: 一定レートで目標速度を送信 + キーキャップ点灯 + vx/wz バー更新。
+    function setBar(name, v){
+      const f = $("bar-"+name), w = Math.min(1, Math.abs(v)) * 50;
+      f.style.width = w + "%";
+      f.style.left = (v < 0 ? 50 - w : 50) + "%";
+      $("val-"+name).textContent = (v >= 0 ? "+" : "") + v.toFixed(2);
+    }
     setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(currentAxes()));
+      const a = currentAxes();
+      send(a);
+      ["w","a","s","d"].forEach(k => $("key-"+k).classList.toggle("active", keys.has(k)));
+      setBar("vx", a.vx); setBar("wz", a.wz);
+    }, 1000 / RATE_HZ);
+    addEventListener("beforeunload", () => send({ vx: 0, wz: 0 }));
+
+    // 5) アーム: 目標角 arm[] を入力で更新、armCur[] を目標へイージングして送る（滑らか）。
+    //    表示は目標（即時フィードバック）、送信はイージング後の値。
+    const arm = [90, 90], armCur = [90, 90];   // [肩, 肘]
+    const clamp = a => Math.max(0, Math.min(180, a));
+    const round1 = a => Math.round(a * 10) / 10;
+    function showArm(){ shv.textContent = Math.round(arm[0]); elv.textContent = Math.round(arm[1]); }
+    const EASE = 0.22;                         // 1 tick あたり目標へ寄せる割合（40Hz）
+    setInterval(() => {
+      let ch = false;
+      for (let i = 0; i < 2; i++){
+        const d = arm[i] - armCur[i];
+        if (Math.abs(d) > 0.15){ armCur[i] += d * EASE; ch = true; }
+        else if (armCur[i] !== arm[i]){ armCur[i] = arm[i]; ch = true; }
       }
+      if (ch) send({ servo: [round1(armCur[0]), round1(armCur[1])] });
+    }, 1000 / 40);
+    document.querySelectorAll("#arm button[data-joint]").forEach(b => {
+      b.addEventListener("click", () => {
+        const j = Number(b.dataset.joint);
+        arm[j] = clamp(arm[j] + STEP * Number(b.dataset.dir));
+        showArm(); b.blur();
+      });
+    });
+    home.addEventListener("click", () => { arm[0] = 90; arm[1] = 90; showArm(); home.blur(); });
+
+    // 6) 矢印キーでアームを連続ジョグ（押下中のみ目標を動かす → 上のイージングが滑らかに追従）。
+    setInterval(() => {
+      let ch = false;
+      if (keys.has("arrowup"))    { arm[1] = clamp(arm[1] + ARM_KEY_STEP * ELBOW_CCW);    ch = true; }
+      if (keys.has("arrowdown"))  { arm[1] = clamp(arm[1] - ARM_KEY_STEP * ELBOW_CCW);    ch = true; }
+      if (keys.has("arrowleft"))  { arm[0] = clamp(arm[0] + ARM_KEY_STEP * SHOULDER_CCW); ch = true; }
+      if (keys.has("arrowright")) { arm[0] = clamp(arm[0] - ARM_KEY_STEP * SHOULDER_CCW); ch = true; }
+      if (ch) showArm();
     }, 1000 / RATE_HZ);
 
-    // 5) 離脱時に明示停止（サーバ側も切断で止まる）
-    addEventListener("beforeunload", () => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ vx: 0, wz: 0 }));
-    });
+    // 7) LED
+    function setLed(on){ ledv.textContent = on ? "on" : "off"; send({ led: on }); }
+    ledon.addEventListener("click", () => { setLed(true);  ledon.blur(); });
+    ledoff.addEventListener("click", () => { setLed(false); ledoff.blur(); });
 
-    // 6) アーム: スライダ→ {"servo":[肩,肘]}（度）／ LED: チェック→ {"led": bool}。
-    //    ドライブのハートビートとは独立に、変化時だけ送る（サーバ側でラッチ・保持）。
-    function sendServo() {
-      shv.textContent = sh.value;
-      elv.textContent = el.value;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ servo: [Number(sh.value), Number(el.value)] }));
-      }
-    }
-    sh.addEventListener("input", sendServo);
-    el.addEventListener("input", sendServo);
-    led.addEventListener("change", () => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ led: led.checked }));
-    });
+    // 8) ホスト変更 + 接続ボタン
+    apply.addEventListener("click", () => { const h = host.value.trim(); if (h) PI = h; loadCams(); connect(); apply.blur(); });
+    $("connect").addEventListener("click", () => { connect(); $("connect").blur(); });
+    host.addEventListener("keydown", e => { if (e.key === "Enter") apply.click(); });
   </script>
 </body>
 </html>
