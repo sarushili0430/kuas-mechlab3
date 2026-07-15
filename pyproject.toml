@@ -84,6 +84,7 @@ omit = [
     "*/record_server.py",
     "*/traffic/traffic_light_node.py",
     "*/traffic/traffic_subscriber.py",
+    "*/traffic/led_indicator.py",
 ]
 
 [tool.coverage.report]
