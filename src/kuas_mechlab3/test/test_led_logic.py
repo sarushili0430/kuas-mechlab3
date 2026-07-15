@@ -72,3 +72,22 @@ def test_token_is_team_specific() -> None:
     policy = LedPolicy(green_token="7Green", off_timeout_s=1.0)
     assert policy.on_message("11Green", now=0.0) is None  # not our green
     assert policy.on_message("7Green", now=0.1) is True
+
+
+def test_repeated_non_green_does_not_resend_off() -> None:
+    # Edge-triggered on the OFF side too: sustained red/yellow after the first
+    # OFF emits no further command, so the indicator does not spam led_cmd (and
+    # stomp a manual LED) at frame rate while a non-green light stays in view.
+    policy = LedPolicy(green_token="11Green", off_timeout_s=1.0)
+    policy.on_message("11Green", now=0.0)  # ON
+    assert policy.on_message("11Red", now=0.1) is False  # OFF (edge)
+    assert policy.on_message("11Red", now=0.2) is None  # no re-send
+
+
+def test_recovers_after_watchdog_off() -> None:
+    # A watchdog-driven OFF must leave state consistent so a later green
+    # re-detection turns the LED back on (the full silence-then-return cycle).
+    policy = LedPolicy(green_token="11Green", off_timeout_s=1.0)
+    policy.on_message("11Green", now=0.0)  # ON
+    assert policy.on_tick(now=1.2) is False  # watchdog OFF (light left view)
+    assert policy.on_message("11Green", now=1.3) is True  # re-detected -> ON
