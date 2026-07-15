@@ -16,9 +16,13 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-# 競合する自動起動を無効化(二重起動 = ノード重複 + カメラ競合を防ぐ)
+# 競合する自動起動を無効化(二重起動 = ノード重複 + カメラ競合を防ぐ)。
+# 単一要素だが、将来ほかの競合ユニットを足せるよう list 形式にしている。
+# shellcheck disable=SC2043
 for u in ml3-ros.service; do
-  if systemctl list-unit-files 2>/dev/null | grep -q "^${u}"; then
+  # そのユニットだけを直接問い合わせる(大きな一覧を grep -q に流すと pipefail 下で
+  # SIGPIPE を拾って取りこぼす恐れがある)。
+  if systemctl list-unit-files --no-legend "$u" 2>/dev/null | grep -q .; then
     echo "競合ユニットを無効化: $u"
     systemctl disable --now "$u" || true
   fi
@@ -40,3 +44,6 @@ echo
 echo "YOLO 重みの事前取得を試行(要ネット):"
 sudo -u "${SUDO_USER:-root}" bash "$REPO/scripts/prefetch-model.sh" \
   || echo "  (prefetch 失敗。ネット環境で $REPO/scripts/prefetch-model.sh を手動実行)"
+echo
+echo ">> 重みは $REPO/ に取得される。unit の WorkingDirectory が別クローンを指す場合は"
+echo "   そのツリーにも yolov8n.pt を置くこと(検出ノードは WorkingDirectory から読む)。"

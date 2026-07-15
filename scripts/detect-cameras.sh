@@ -25,8 +25,18 @@ REAR=/dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.3:1.0-vide
 
 echo
 echo "=== この機体の既定マッピング (存在チェック) ==="
-printf '  FRONT (port 1.4): %s  [%s]\n' "$FRONT" "$([ -e "$FRONT" ] && echo OK || echo MISSING)"
-printf '  REAR  (port 1.3): %s  [%s]\n' "$REAR"  "$([ -e "$REAR" ] && echo OK || echo MISSING)"
+[ -e "$FRONT" ] && front_state=OK || front_state=MISSING
+[ -e "$REAR" ]  && rear_state=OK  || rear_state=MISSING
+printf '  FRONT (port 1.4): %s  [%s]\n' "$FRONT" "$front_state"
+printf '  REAR  (port 1.3): %s  [%s]\n' "$REAR"  "$rear_state"
+
+# 期待ポートにカメラが無ければ、貼り付け用の export は出さずに失敗させる
+# (MISSING を見落として存在しない device を start-all.sh に渡すのを防ぐ)。
+if [ "$front_state" != OK ] || [ "$rear_state" != OK ]; then
+  echo
+  echo "ERROR: 前後どちらかのカメラが既定ポートに見つかりません。USB 接続とポートを確認してください。" >&2
+  exit 1
+fi
 
 echo
 echo "start-all.sh / systemd にそのまま渡せる形:"

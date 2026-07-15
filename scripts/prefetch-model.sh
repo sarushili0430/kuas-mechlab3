@@ -7,7 +7,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root (= detector の実行時 CWD)
 MODEL="${MODEL:-yolov8n.pt}"
 
-if [ -f "$MODEL" ]; then
+# 存在するだけでは不十分: 途中で切れた前回 DL の 0/部分バイトを「取得済み」と
+# 誤認しないよう、妥当なサイズ(yolov8n.pt は約 6MB)も確認する。
+if [ -f "$MODEL" ] && [ "$(stat -c%s "$MODEL" 2>/dev/null || echo 0)" -ge 1000000 ]; then
   echo "既に存在: $(pwd)/$MODEL ($(du -h "$MODEL" | cut -f1))"
   exit 0
 fi
