@@ -680,10 +680,14 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 | `light_logic.py` | 色判定（ピクセル数→色）と publish 判断 `status_message`（検出＋色→`<team><Color>` or 無出力）。**入出力契約の純ロジック** | pytest |
 | `traffic_light_node.py` | ROSノード: カメラトピック購読→JPEGデコード→YOLO検出→HSVで色判定→publish | colcon |
 | `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
+| `led_logic.py` | LED 点灯判断（緑トークン一致＋消灯タイムアウト）の純ロジック `LedPolicy`（エッジ検出） | pytest |
+| `led_indicator.py` | ROSノード: `traffic_light_topic` 購読 → 自チームの緑のとき機体 LED（`led_cmd`）を点灯 | colcon |
 
 > **publish の判断（出力 IO）は `light_logic.status_message` に集約**し pytest で担保している。信号機が写っていない／色が曖昧（`unknown`）なフレームでは `None` を返して**何も publish しない**（誤った状態を流さない）。ノード側は「デコード→検出→`status_message`→publish」の薄い配線に徹する。
 
 > `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
+
+> **機体 LED で緑検出を可視化**: `led_indicator` ノードが `traffic_light_topic` を購読し、**自チームの緑（`11Green`）のときだけ**機体 LED（`led_cmd`）を点灯する（赤/黄・光を外すと消灯）。バリアが開く条件を機体側でも目視確認できる。判定は純 `led_logic.LedPolicy`（pytest）で、点灯/消灯が**変化したときだけ** publish するのでコックピットの手動 LED 操作と競合しにくい。`traffic_launch.py` が検出ノードと一緒に起動する。
 
 ### 実行（ROS2 Humble 上）
 
@@ -957,6 +961,8 @@ sudo systemctl stop kuas-mechlab3                     # 一時停止（start-all
 
 > 信号機検出は `ultralytics`（YOLOv8）が要る。boot 常駐にする前に `pip install ultralytics` と **モデル `yolov8n.pt` の事前ダウンロード**（初回実行が取得するので一度オンラインで走らせておく）を済ませること。オフライン会場で初回 DL に失敗すると信号機ノードだけ上がらない。
 
+> **ワンショット導入 & 再現性**: `scripts/install-services.sh`（root で実行）がユニット配置・有効化・競合ユニット無効化・モデル事前取得（`scripts/prefetch-model.sh`）をまとめて行う。カメラは `/dev/videoN` が毎起動で入れ替わるため **USB ポート（by-path）で固定**する — `scripts/detect-cameras.sh` で前後の by-path を確認してユニットの `FRONT_DEVICE`/`REAR_DEVICE` に設定（この機体: 前=ポート 1.4 / 後=ポート 1.3）。操縦 UI 配信は `scripts/ml3-cockpit.service`（`:8000`）。**当日の電源投入→確認→復旧手順は [`docs/competition-runbook.md`](./docs/competition-runbook.md)**。
+
 **`scripts/start-record.sh`** — 人間のデモ走行を **1 エピソード = 1 bag + `meta.json`** で記録する（模倣学習のデータ収集 / 下記「自律化ロードマップ」Phase 2）。先に driver・カメラ・teleop を起動しておく（別ターミナル or `start-all.sh`）。記録するのは `/cmd_norm`（行動ラベル）+ 前後カメラ + `cmd_vel` / 車輪テレメトリ。
 
 ```bash
@@ -1075,8 +1081,10 @@ while True:
 │       │   │   └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
 │       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
 │       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
+│       │       ├── led_logic.py             # 純: LED 点灯判断 LedPolicy（緑トークン + 消灯タイムアウト）
 │       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
-│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       │       ├── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       │       └── led_indicator.py         # ROSノード: 緑検出→機体 LED（led_cmd）点灯
 │       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
@@ -1084,10 +1092,14 @@ while True:
 │       └── setup.cfg
 ├── firmware/
 │   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
-├── docs/                     # 補足ドキュメント（autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
+├── docs/                     # 補足ドキュメント（competition-runbook.md / autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
 ├── scripts/                  # bring-up 用スクリプト
 │   ├── start-all.sh          # driver + カメラ + teleop + 録画 + 信号機を一発起動（Ctrl+C で一括停止）
 │   ├── kuas-mechlab3.service # 上を boot 時から常駐させる systemd ユニット定義
+│   ├── ml3-cockpit.service   # 操縦 UI（cockpit）を :8000 で配信する systemd ユニット
+│   ├── install-services.sh   # 上 2 ユニットを配置・有効化・競合無効化・モデル事前取得（sudo）
+│   ├── detect-cameras.sh     # 前後カメラの by-path を特定（USB ポートで固定）
+│   ├── prefetch-model.sh     # YOLO の yolov8n.pt を事前取得（オフライン会場対策）
 │   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
 │   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
 │   ├── start-record.sh       # デモ走行を rosbag 録画（模倣学習データ収集）
