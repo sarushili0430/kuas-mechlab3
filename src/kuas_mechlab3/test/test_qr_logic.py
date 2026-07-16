@@ -9,7 +9,7 @@ rate, and does not stomp the cockpit's manual LED button between reads.
 Time is injected so the watchdog is tested without sleeping.
 """
 
-from kuas_mechlab3.traffic.qr_logic import QrLedPolicy
+from kuas_mechlab3.traffic.qr_logic import DecodeThrottle, QrLedPolicy
 
 
 def test_qr_read_turns_led_on() -> None:
@@ -82,3 +82,52 @@ def test_any_payload_counts() -> None:
     # payload. A different code still lights it.
     policy = QrLedPolicy(off_timeout_s=1.0)
     assert policy.on_qr("SOME-OTHER-CODE", now=0.0) is True
+
+
+# --- DecodeThrottle -------------------------------------------------------
+# QR decoding costs ~70-105 ms/frame on the robot, and the traffic-light
+# detector (#9) shares the same Pi and the same camera. #9 has a timing
+# requirement (catch the green) and the QR task (#5) does not, so the QR decode
+# is rate-limited to leave the detector headroom.
+
+
+def test_first_frame_always_decodes() -> None:
+    throttle = DecodeThrottle(interval_s=0.2)
+    assert throttle.should_decode(now=0.0) is True
+
+
+def test_frame_within_interval_is_skipped() -> None:
+    throttle = DecodeThrottle(interval_s=0.2)
+    throttle.should_decode(now=0.0)
+    assert throttle.should_decode(now=0.1) is False
+
+
+def test_frame_after_interval_decodes() -> None:
+    throttle = DecodeThrottle(interval_s=0.2)
+    throttle.should_decode(now=0.0)
+    assert throttle.should_decode(now=0.2) is True
+
+
+def test_skipped_frames_do_not_reset_the_clock() -> None:
+    # A skip must not push the next decode further out, or a 20 Hz camera would
+    # starve the decode entirely.
+    throttle = DecodeThrottle(interval_s=0.2)
+    throttle.should_decode(now=0.0)  # decode
+    throttle.should_decode(now=0.05)  # skip
+    throttle.should_decode(now=0.1)  # skip
+    assert throttle.should_decode(now=0.2) is True
+
+
+def test_zero_interval_decodes_every_frame() -> None:
+    # interval 0 disables throttling (the pre-throttle behaviour).
+    throttle = DecodeThrottle(interval_s=0.0)
+    assert throttle.should_decode(now=0.0) is True
+    assert throttle.should_decode(now=0.0) is True
+
+
+def test_backwards_time_does_not_wedge_the_throttle() -> None:
+    # Defensive: the node drives this from a monotonic clock, but a negative
+    # delta must not lock the decode out forever.
+    throttle = DecodeThrottle(interval_s=0.2)
+    throttle.should_decode(now=10.0)
+    assert throttle.should_decode(now=0.0) is True

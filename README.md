@@ -689,7 +689,7 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 
 > **機体 LED は信号機タスクでは使わない**: 信号機タスク（#9）は「検出 → `11Green` を publish → 無線でバリアを開ける」で完結し、LED は関与しない。機体 LED は **QR コードタスク（#5）** 用なので、`traffic_launch.py` は LED を駆動しない。
 
-> **QR コードタスク（#5）**: `qr_detector` を `ros2 run kuas_mechlab3 qr_detector` で起動すると、前カメラの QR を cv2 の `QRCodeDetector` でデコードし、payload を `qr_topic` に publish しつつ、**QR が読める間だけ**機体 LED（`led_cmd`）を点灯する（外すと約 1 秒で消灯）。実機実測: 320×240 のまま **76% のフレームでデコード成功**（カードを回転させても成立）。pyzbar / libzbar は不要（cv2 は既存の依存）。**未対応**: 課題 #5 の「QR ごとに色を変える」は機体 LED が緑単色 on/off のため不可（firmware `main.cpp` の通り RGB 化が前提）。判定は純 `qr_logic.QrLedPolicy`（pytest）で、**変化したときだけ** publish するのでコックピットの手動 LED と競合しにくい。
+> **QR コードタスク（#5）**: `qr_detector` は `start-all.sh` が **常時起動**する（`qr_launch.py`、単体なら `ros2 launch kuas_mechlab3 qr_launch.py`）。前カメラの QR を cv2 の `QRCodeDetector` でデコードし、payload を `qr_topic` に publish しつつ、**QR が読める間だけ**機体 LED（`led_cmd`）を点灯する（外すと約 1 秒の watchdog で消灯）。実機実測: 320×240 のまま **76% のフレームでデコード成功**（カードを回転させても成立）。pyzbar / libzbar は不要（cv2 は既存の依存）。**`decode_interval`（既定 0.2 秒 = 約 5Hz）でデコードを間引く**: 信号機検出（#9）と同じ Pi・同じカメラを共有しており、#9 は緑を取り逃せない（QR タスクにその制約は無い）ため、重い方を間引いて#9 に CPU を譲る。判定は純 `qr_logic`（`QrLedPolicy` + `DecodeThrottle`、pytest）で、**変化したときだけ** publish するのでコックピットの手動 LED と競合しにくい。**未対応**: 課題 #5 の「QR ごとに色を変える」は機体 LED が緑単色 on/off のため不可（多色 LED が前提）。
 
 ### 実行（ROS2 Humble 上）
 

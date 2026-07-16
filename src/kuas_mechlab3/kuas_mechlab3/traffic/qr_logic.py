@@ -24,6 +24,41 @@ deliberately binary -- "a QR is readable" -- not payload-dependent.
 """
 
 
+class DecodeThrottle:
+    """Rate-limit the QR decode so it leaves the traffic detector headroom.
+
+    Decoding costs ~70-105 ms/frame on the robot, and the traffic-light detector
+    (課題 #9, YOLOv8) shares the same Pi and the same camera topic. #9 has a
+    timing requirement -- it must catch the green -- while the QR task (#5) does
+    not: the robot parks in front of the code and reads it. So the cheap task
+    yields to the expensive one.
+
+    Dropping to ~5 Hz costs nothing behaviourally: the LED watchdog is 1 s, and
+    the measured decode rate is ~76%, so a read still lands well inside a second.
+
+    ``interval_s=0`` disables throttling (decode every frame).
+    """
+
+    def __init__(self, interval_s: float) -> None:
+        self._interval_s = interval_s
+        self._last_s: float | None = None
+
+    def should_decode(self, now: float) -> bool:
+        """True when enough time has passed since the last decode."""
+        if self._last_s is None:
+            self._last_s = now
+            return True
+        elapsed = now - self._last_s
+        # elapsed < 0 == the clock went backwards; decode and resync rather than
+        # lock the decode out until the clock catches up.
+        if elapsed >= self._interval_s or elapsed < 0:
+            self._last_s = now
+            return True
+        # NOTE: do not touch _last_s on a skip, or a 20 Hz camera would push the
+        # next decode out forever.
+        return False
+
+
 class QrLedPolicy:
     """Decide the onboard LED state from QR decode events (edge-triggered)."""
 

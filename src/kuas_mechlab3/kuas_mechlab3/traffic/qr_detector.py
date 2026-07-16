@@ -25,7 +25,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, String
 
-from kuas_mechlab3.traffic.qr_logic import QrLedPolicy
+from kuas_mechlab3.traffic.qr_logic import DecodeThrottle, QrLedPolicy
 
 
 class QrDetector(Node):  # type: ignore[misc]
@@ -34,11 +34,13 @@ class QrDetector(Node):  # type: ignore[misc]
     def __init__(self) -> None:
         super().__init__("qr_detector")
         self.declare_parameter("off_timeout", 1.0)
+        self.declare_parameter("decode_interval", 0.2)
         self.declare_parameter("image_topic", "/front_camera/image_raw/compressed")
         self.declare_parameter("qr_topic", "qr_topic")
         self.declare_parameter("led_topic", "led_cmd")
 
         off_timeout = float(self.get_parameter("off_timeout").value)
+        decode_interval = float(self.get_parameter("decode_interval").value)
         image_topic = str(self.get_parameter("image_topic").value)
         qr_topic = str(self.get_parameter("qr_topic").value)
         led_topic = str(self.get_parameter("led_topic").value)
@@ -50,6 +52,7 @@ class QrDetector(Node):  # type: ignore[misc]
         self._clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._detector = cv2.QRCodeDetector()
         self._policy = QrLedPolicy(off_timeout_s=off_timeout)
+        self._throttle = DecodeThrottle(interval_s=decode_interval)
 
         self._qr_pub = self.create_publisher(String, qr_topic, 10)
         self._led_pub = self.create_publisher(Bool, led_topic, 10)
@@ -71,7 +74,14 @@ class QrDetector(Node):  # type: ignore[misc]
         return float(self._clock.now().nanoseconds) / 1e9
 
     def _on_image(self, msg: CompressedImage) -> None:
-        """Decode one frame, publish any payload, then apply the LED policy."""
+        """Decode one frame (rate-limited), publish the payload, apply the policy."""
+        now = self._now_s()
+        # Bail before the JPEG decode so a skipped frame costs nothing: this node
+        # shares the Pi and the camera with the traffic-light detector (#9), which
+        # unlike the QR task has a timing requirement. The watchdog runs off the
+        # timer, so skipping frames cannot strand the LED on.
+        if not self._throttle.should_decode(now):
+            return
         frame = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             return
@@ -82,7 +92,7 @@ class QrDetector(Node):  # type: ignore[misc]
             return
         if payload:
             self._qr_pub.publish(String(data=payload))
-        self._apply(self._policy.on_qr(payload, self._now_s()))
+        self._apply(self._policy.on_qr(payload, now))
 
     def _on_tick(self) -> None:
         self._apply(self._policy.on_tick(self._now_s()))

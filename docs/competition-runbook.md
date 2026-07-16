@@ -22,10 +22,10 @@ source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=11
 # サービスが両方 active か
 systemctl is-active kuas-mechlab3 ml3-cockpit          # → active / active
 
-# ノードが 7 つ・重複なしか(重複 = 二重起動のサイン)
+# ノードが 8 つ・重複なしか(重複 = 二重起動のサイン)
 ros2 node list | sort
 #   front_camera, rear_camera, mbed_driver, mjpeg_server,
-#   record_server, teleop_server, traffic_light_node
+#   record_server, teleop_server, traffic_light_node, qr_detector
 ros2 node list | sort | uniq -d                        # 何も出なければ OK
 ```
 
@@ -54,7 +54,19 @@ ros2 topic echo /traffic_light_topic
 ```
 - 信号機タスクでは機体 LED は**点灯しない**(LED は QR コードタスク #5 用)。
 
-## 5. トラブル対応
+## 5. QR コードタスク(#5)の確認
+```bash
+# QR を前カメラに見せる
+ros2 topic echo /qr_topic                              # payload が出れば OK
+ros2 topic echo /led_cmd                               # true(点灯) / false(消灯)
+```
+- **QR が読めている間だけ機体 LED が点灯**し、外すと約 1 秒(watchdog)で消灯する。
+- デコードは間欠(実機実測 ~76%)だが watchdog が隙間を埋めるので**点滅しない**。
+- 信号機検出(#9)と**同時に常時起動**している。QR 側は `decode_interval`(既定 0.2 秒 = 約 5Hz)で
+  デコードを間引き、#9(緑を取り逃せないタスク)に CPU を譲っている。#9 の検出が遅いと感じたら
+  `decode_interval` を上げる(例 0.5)。
+
+## 6. トラブル対応
 | 症状 | 対処 |
 |------|------|
 | カメラ 0Hz / 前後入れ替わり | `detect-cameras.sh` で by-path 確認 → 下記クリーン再起動 |
@@ -71,7 +83,7 @@ sudo systemctl start kuas-mechlab3
 sleep 30    # 立ち上がり待ち → 手順 1〜2 を再確認
 ```
 
-## 6. 終了
+## 7. 終了
 ```bash
 sudo systemctl stop kuas-mechlab3 ml3-cockpit
 sudo shutdown -h now
