@@ -680,14 +680,12 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 | `light_logic.py` | 色判定（ピクセル数→色）と publish 判断 `status_message`（検出＋色→`<team><Color>` or 無出力）。**入出力契約の純ロジック** | pytest |
 | `traffic_light_node.py` | ROSノード: カメラトピック購読→JPEGデコード→YOLO検出→HSVで色判定→publish | colcon |
 | `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
-| `led_logic.py` | LED 点灯判断（緑トークン一致＋消灯タイムアウト）の純ロジック `LedPolicy`（エッジ検出） | pytest |
-| `led_indicator.py` | ROSノード: `traffic_light_topic` 購読 → 自チームの緑のとき機体 LED（`led_cmd`）を点灯 | colcon |
 
 > **publish の判断（出力 IO）は `light_logic.status_message` に集約**し pytest で担保している。信号機が写っていない／色が曖昧（`unknown`）なフレームでは `None` を返して**何も publish しない**（誤った状態を流さない）。ノード側は「デコード→検出→`status_message`→publish」の薄い配線に徹する。
 
 > `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
 
-> **機体 LED で緑検出を可視化**: `led_indicator` ノードが `traffic_light_topic` を購読し、**自チームの緑（`11Green`）のときだけ**機体 LED（`led_cmd`）を点灯する（赤/黄・光を外すと消灯）。バリアが開く条件を機体側でも目視確認できる。判定は純 `led_logic.LedPolicy`（pytest）で、点灯/消灯が**変化したときだけ** publish するのでコックピットの手動 LED 操作と競合しにくい。`traffic_launch.py` が検出ノードと一緒に起動する。
+> **機体 LED は信号機タスクでは使わない**: 信号機タスク（#9）は「検出 → `11Green` を publish → 無線でバリアを開ける」で完結し、LED は関与しない。機体 LED は **QR コードタスク（#5）** 用（QR に応じた色表示）なので、`traffic_launch.py` は LED を駆動しない。
 
 ### 実行（ROS2 Humble 上）
 
@@ -1081,10 +1079,8 @@ while True:
 │       │   │   └── mjpeg_server.py    # ROSノード: compressed 購読→HTTP 中継
 │       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
 │       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
-│       │       ├── led_logic.py             # 純: LED 点灯判断 LedPolicy（緑トークン + 消灯タイムアウト）
 │       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
-│       │       ├── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
-│       │       └── led_indicator.py         # ROSノード: 緑検出→機体 LED（led_cmd）点灯
+│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
 │       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）

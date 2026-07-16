@@ -34,7 +34,6 @@ setup(
             "record_server = kuas_mechlab3.record_server:main",
             "traffic_light = kuas_mechlab3.traffic.traffic_light_node:main",
             "traffic_subscriber = kuas_mechlab3.traffic.traffic_subscriber:main",
-            "led_indicator = kuas_mechlab3.traffic.led_indicator:main",
         ],
     },
 )

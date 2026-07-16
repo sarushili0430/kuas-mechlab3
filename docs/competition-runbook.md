@@ -22,10 +22,10 @@ source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=11
 # サービスが両方 active か
 systemctl is-active kuas-mechlab3 ml3-cockpit          # → active / active
 
-# ノードが 8 つ・重複なしか(重複 = 二重起動のサイン)
+# ノードが 7 つ・重複なしか(重複 = 二重起動のサイン)
 ros2 node list | sort
 #   front_camera, rear_camera, mbed_driver, mjpeg_server,
-#   record_server, teleop_server, traffic_light_node, led_indicator
+#   record_server, teleop_server, traffic_light_node
 ros2 node list | sort | uniq -d                        # 何も出なければ OK
 ```
 
@@ -52,7 +52,7 @@ ros2 topic echo /traffic_light_topic
 #   緑 → 11Green(バリアが開く文字列) / 赤 → 11Red / 黄 → 11Yellow
 #   何も無し → 無出力(フェイルセーフ:検出したときだけ publish)
 ```
-- 検出中は機体の LED が点灯する(`led_indicator`。**緑のときだけ ON**、赤/黄・光を外すと OFF)。
+- 信号機タスクでは機体 LED は**点灯しない**(LED は QR コードタスク #5 用)。
 
 ## 5. トラブル対応
 | 症状 | 対処 |
