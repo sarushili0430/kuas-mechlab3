@@ -25,7 +25,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, String
 
-from kuas_mechlab3.traffic.qr_logic import DecodeThrottle, QrLedPolicy
+from kuas_mechlab3.traffic.qr_logic import QrLedPolicy
+from kuas_mechlab3.traffic.throttle import DecodeThrottle
 
 
 class QrDetector(Node):  # type: ignore[misc]
