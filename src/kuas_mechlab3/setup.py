@@ -34,6 +34,7 @@ setup(
             "record_server = kuas_mechlab3.record_server:main",
             "traffic_light = kuas_mechlab3.traffic.traffic_light_node:main",
             "traffic_subscriber = kuas_mechlab3.traffic.traffic_subscriber:main",
+            "qr_detector = kuas_mechlab3.traffic.qr_detector:main",
         ],
     },
 )

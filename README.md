@@ -680,12 +680,16 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 | `light_logic.py` | 色判定（ピクセル数→色）と publish 判断 `status_message`（検出＋色→`<team><Color>` or 無出力）。**入出力契約の純ロジック** | pytest |
 | `traffic_light_node.py` | ROSノード: カメラトピック購読→JPEGデコード→YOLO検出→HSVで色判定→publish | colcon |
 | `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
+| `qr_logic.py` | QR タスク(#5)の LED 点灯判断 `QrLedPolicy`（QR が読める間は点灯＋消灯タイムアウト、エッジ検出）の純ロジック | pytest |
+| `qr_detector.py` | ROSノード: 前カメラ購読 → cv2 で QR デコード → `qr_topic` に payload を publish ＋ 機体 LED(`led_cmd`)を点灯 | colcon |
 
 > **publish の判断（出力 IO）は `light_logic.status_message` に集約**し pytest で担保している。信号機が写っていない／色が曖昧（`unknown`）なフレームでは `None` を返して**何も publish しない**（誤った状態を流さない）。ノード側は「デコード→検出→`status_message`→publish」の薄い配線に徹する。
 
 > `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
 
-> **機体 LED は信号機タスクでは使わない**: 信号機タスク（#9）は「検出 → `11Green` を publish → 無線でバリアを開ける」で完結し、LED は関与しない。機体 LED は **QR コードタスク（#5）** 用（QR に応じた色表示）なので、`traffic_launch.py` は LED を駆動しない。
+> **機体 LED は信号機タスクでは使わない**: 信号機タスク（#9）は「検出 → `11Green` を publish → 無線でバリアを開ける」で完結し、LED は関与しない。機体 LED は **QR コードタスク（#5）** 用なので、`traffic_launch.py` は LED を駆動しない。
+
+> **QR コードタスク（#5）**: `qr_detector` を `ros2 run kuas_mechlab3 qr_detector` で起動すると、前カメラの QR を cv2 の `QRCodeDetector` でデコードし、payload を `qr_topic` に publish しつつ、**QR が読める間だけ**機体 LED（`led_cmd`）を点灯する（外すと約 1 秒で消灯）。実機実測: 320×240 のまま **76% のフレームでデコード成功**（カードを回転させても成立）。pyzbar / libzbar は不要（cv2 は既存の依存）。**未対応**: 課題 #5 の「QR ごとに色を変える」は機体 LED が緑単色 on/off のため不可（firmware `main.cpp` の通り RGB 化が前提）。判定は純 `qr_logic.QrLedPolicy`（pytest）で、**変化したときだけ** publish するのでコックピットの手動 LED と競合しにくい。
 
 ### 実行（ROS2 Humble 上）
 
@@ -1080,7 +1084,9 @@ while True:
 │       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
 │       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
 │       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
-│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       │       ├── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       │       ├── qr_logic.py              # 純: QR タスク #5 の LED 判断 QrLedPolicy
+│       │       └── qr_detector.py           # ROSノード: 前カメラ→cv2 QR デコード→qr_topic + led_cmd
 │       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
