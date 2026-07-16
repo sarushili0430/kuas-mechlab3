@@ -21,8 +21,13 @@ if [[ ! -f "$ROS_SETUP" ]]; then
   echo "       ROS_SETUP=/path/to/setup.bash で上書きできます。" >&2
   exit 1
 fi
+# ROS の setup.bash は未定義変数(AMENT_TRACE_SETUP_FILES 等)を参照する作りのため、
+# nounset(-u) 下では source した瞬間に「unbound variable」で落ちる。
+# source の間だけ -u を外す(スクリプト自身のロジック保護には -u を残す)。
+set +u
 # shellcheck disable=SC1090
 source "$ROS_SETUP"
+set -u
 
 # colcon ワークスペース（未ビルドなら案内して終了）
 if [[ ! -f install/setup.bash ]]; then
@@ -30,7 +35,9 @@ if [[ ! -f install/setup.bash ]]; then
   echo "       colcon build --packages-select kuas_mechlab3" >&2
   exit 1
 fi
+set +u
 # shellcheck disable=SC1091
 source install/setup.bash
+set -u
 
 echo "ROS env ready (ROS_DOMAIN_ID=${ROS_DOMAIN_ID}, ws=${REPO_ROOT})"
