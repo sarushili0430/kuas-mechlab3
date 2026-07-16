@@ -46,6 +46,11 @@ static const int  SERVO_PERIOD_US = 20000;  // 50 Hz
 static const int  SERVO_MIN_US    = 500;    // 安全下限（protocol.py と一致）
 static const int  SERVO_MAX_US    = 2500;   // 安全上限（protocol.py と一致）
 static const char SERVO_EOP       = 'a';    // サーボ指令パケットの終端
+// スルーレート上限: 出力パルス幅を 1 フレームあたり最大この[us]だけ目標へ寄せる。
+// 40us/frame × 50fps = 2000us/s ≈ 180°/s（全幅 2000us = 180°）。大きな角度指令でも
+// DS3225 を全速スラムさせず、突入/ストール電流サージとアームの振り切れを抑える。
+// 速く/遅くしたい時はこの値だけ調整（大=速い＝電流大 / 小=遅い＝電流小）。
+static const int  SERVO_SLEW_US_PER_FRAME = 40;
 
 // ===== 車載 LED: 緑単色 on/off（docs: robot-pinout-power-reference §3c）=====
 // D3(PB_3) の DigitalOut（220Ω 直列）。終端 'l' の独立パケット "v/l"（v=0|1）で
@@ -77,46 +82,90 @@ private:
     int pwm_ = 0;
 };
 
-// ===== Servo ソフト PWM: Ticker/Timeout で任意 GPIO を 50Hz 駆動 =====
+// ===== Servo ソフト PWM（モーターの HW PWM とは独立系統の別モジュール）=====
 // 駆動系(TIM1/3/16/17) と us_ticker(TIM2) で HW タイマが枯渇し 50Hz サーボ用の空き ch が
 // 無い。→ us_ticker ベースの Ticker/Timeout でソフト PWM を生成（HW PWM 非依存＝配線ピン
-// は任意 GPIO）。20ms 毎に servo_frame_isr が有効パルスのピンを上げ、各パルス幅[us]後の
-// Timeout で下げる。servo_us は次フレームで反映（グリッチ無し）。起動時 servo_us=0=無
-// パルスで最初の指令までアームは動かない。車輪と違いウォッチドッグでは中立化せず、最後に
-// 指令したパルスを保持し続ける。ジッタは割込み遅延程度（数us≪パルス幅）でサーボは許容。
-static DigitalOut servo_pin0(A0);          // s1=shoulder
-static DigitalOut servo_pin1(A1);          // s2=elbow
-static Ticker     servo_frame;             // 20ms フレーム先頭
-static Timeout    servo_off0, servo_off1;  // 立下りワンショット
-static int servo_us[SERVO_COUNT] = {0, 0};
+// は任意 GPIO）。車輪の L298NMotor（ハード PWM）とは別クラス・別パラメータで完全に分離。
+// 20ms 毎に frame_isr が有効パルスのピンを上げ、各パルス幅[us]後の Timeout で下げる。
+//
+// スルーレート制限: 指令は「目標パルス幅」として受け、実際の出力パルス幅は 1 フレーム
+// あたり最大 SERVO_SLEW_US_PER_FRAME[us] だけ目標へ寄せる。大きな角度指令でも DS3225 を
+// 全速スラムさせず、突入/ストール電流サージとアームの振り切れ（オーバーシュート）を防ぐ。
+// 初回指令だけは前回位置が無いのでスナップ（初動は従来どおり）。起動時は目標=0=無パルスで
+// 最初の指令までアームは動かない。車輪と違いウォッチドッグでは中立化せず、最後の目標を保持
+// し続ける。ジッタは割込み遅延程度（数us≪パルス幅）でサーボは許容。
+class ServoSoftPwm {
+public:
+    ServoSoftPwm() : pin0_(A0), pin1_(A1) {}  // s1=shoulder A0 / s2=elbow A1
 
-static void servo0_low() { servo_pin0 = 0; }
-static void servo1_low() { servo_pin1 = 0; }
-
-// フレーム先頭（20ms 毎）: 有効パルスのピンを上げ、幅[us]後に下げる Timeout を仕込む。
-static void servo_frame_isr() {
-    if (servo_us[0] > 0) {
-        servo_pin0 = 1;
-        servo_off0.attach(&servo0_low, std::chrono::microseconds(servo_us[0]));
+    // Ticker を起動して 50Hz フレームを回し始める（main から 1 回だけ呼ぶ）。
+    void init() {
+        pin0_ = 0;
+        pin1_ = 0;
+        frame_.attach(callback(this, &ServoSoftPwm::frame_isr),
+                      std::chrono::microseconds(SERVO_PERIOD_US));
     }
-    if (servo_us[1] > 0) {
-        servo_pin1 = 1;
-        servo_off1.attach(&servo1_low, std::chrono::microseconds(servo_us[1]));
+
+    // 目標パルス幅[us]をセット（安全帯にクランプ）。反映はフレーム毎にスルーレート制限付き。
+    // main ループ（非 ISR）からのみ呼ぶ。出力側 current_us_ の書き手は ISR だけなので競合しない。
+    void set_target(int ch, int us) {
+        if (us < SERVO_MIN_US) us = SERVO_MIN_US;
+        if (us > SERVO_MAX_US) us = SERVO_MAX_US;
+        target_us_[ch] = us;
     }
-}
 
-static void servo_init() {
-    servo_pin0 = 0;
-    servo_pin1 = 0;
-    servo_frame.attach(&servo_frame_isr, std::chrono::microseconds(SERVO_PERIOD_US));  // 50 Hz
-}
+    // 受領確認エコー用: 受理済みの目標（クランプ後）を返す。
+    int target(int ch) const { return target_us_[ch]; }
 
-// ch=0:shoulder(A0) / ch=1:elbow(A1)。us を安全帯にクランプ、反映は次フレーム。
-static void servo_apply_us(int ch, int us) {
-    if (us < SERVO_MIN_US) us = SERVO_MIN_US;
-    if (us > SERVO_MAX_US) us = SERVO_MAX_US;
-    servo_us[ch] = us;
-}
+private:
+    void ch0_low() { pin0_ = 0; }
+    void ch1_low() { pin1_ = 0; }
+
+    // 目標へ最大 SERVO_SLEW_US_PER_FRAME/フレームだけ寄せ、今フレームのパルス幅を返す。
+    // 0 = 未指令（無パルス）。current_us_ の唯一の書き手（ISR 内のみ）。
+    int step(int ch) {
+        int tgt = target_us_[ch];
+        if (tgt == 0) { current_us_[ch] = 0; return 0; }  // 未指令: 無パルス
+        int cur = current_us_[ch];
+        if (cur == 0) {
+            cur = tgt;                                     // 初回: 前回位置が無いのでスナップ
+        } else {
+            int d = tgt - cur;                             // スルーレート制限
+            if (d >  SERVO_SLEW_US_PER_FRAME) d =  SERVO_SLEW_US_PER_FRAME;
+            if (d < -SERVO_SLEW_US_PER_FRAME) d = -SERVO_SLEW_US_PER_FRAME;
+            cur += d;
+        }
+        if (cur < SERVO_MIN_US) cur = SERVO_MIN_US;        // 念のため安全帯に収める
+        if (cur > SERVO_MAX_US) cur = SERVO_MAX_US;
+        current_us_[ch] = cur;
+        return cur;
+    }
+
+    // フレーム先頭（20ms 毎）: 各 ch をスルーレート制限で 1 歩進め、有効パルスのピンを上げ、
+    // 幅[us]後に下げる Timeout を仕込む。
+    void frame_isr() {
+        const int c0 = step(0);
+        if (c0 > 0) {
+            pin0_ = 1;
+            off0_.attach(callback(this, &ServoSoftPwm::ch0_low),
+                         std::chrono::microseconds(c0));
+        }
+        const int c1 = step(1);
+        if (c1 > 0) {
+            pin1_ = 1;
+            off1_.attach(callback(this, &ServoSoftPwm::ch1_low),
+                         std::chrono::microseconds(c1));
+        }
+    }
+
+    DigitalOut pin0_, pin1_;                          // s1=shoulder A0 / s2=elbow A1
+    Ticker     frame_;                                // 20ms フレーム先頭
+    Timeout    off0_, off1_;                          // 立下りワンショット
+    volatile int target_us_[SERVO_COUNT] = {0, 0};    // main が書く目標（0=未指令）
+    int          current_us_[SERVO_COUNT] = {0, 0};   // ISR 専有の現在出力幅（0=無パルス）
+};
+
+static ServoSoftPwm servos;
 
 static BufferedSerial pc(USBTX, USBRX, 115200);
 
@@ -131,7 +180,7 @@ int main() {
         L298NMotor(MOTOR_PINS[0]), L298NMotor(MOTOR_PINS[1]),
         L298NMotor(MOTOR_PINS[2]), L298NMotor(MOTOR_PINS[3]),
     };
-    servo_init();                // A0/A1 をソフト PWM(Ticker/Timeout)で 50Hz 駆動
+    servos.init();               // A0/A1 をソフト PWM(Ticker/Timeout)で 50Hz 駆動（モーターと独立）
     DigitalOut led(LED_PIN, 0);  // 起動時は消灯
 
     pc.set_blocking(false);
@@ -164,10 +213,10 @@ int main() {
                 rx[rx_len] = '\0';
                 int u[SERVO_COUNT];
                 if (sscanf(rx, "%d/%d", &u[0], &u[1]) == SERVO_COUNT) {
-                    for (int i = 0; i < SERVO_COUNT; i++) servo_apply_us(i, u[i]);
+                    for (int i = 0; i < SERVO_COUNT; i++) servos.set_target(i, u[i]);
                     char ack[40];
                     int n = snprintf(ack, sizeof(ack), "srv %d %d\n",
-                                     servo_us[0], servo_us[1]);
+                                     servos.target(0), servos.target(1));
                     pc.write(ack, n);
                 }
                 rx_len = 0;
