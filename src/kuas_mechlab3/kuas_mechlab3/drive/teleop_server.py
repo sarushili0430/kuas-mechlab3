@@ -218,6 +218,10 @@ class TeleopServer(Node):  # type: ignore[misc]
         self.declare_parameter("host", "0.0.0.0")
         self.declare_parameter("port", 9001)
         self.declare_parameter("publish_rate", 20.0)
+        # Arm servo / LED publish on their own faster timer (see below) so the
+        # cockpit's ~40 Hz eased servo stream is not decimated to the 20 Hz
+        # drive tick. 50 Hz matches the firmware's servo frame.
+        self.declare_parameter("servo_publish_rate", 50.0)
         self.declare_parameter("hold_timeout", 0.4)
         self.declare_parameter("max_linear", 0.5)
         self.declare_parameter("max_angular", 2.0)
@@ -241,7 +245,8 @@ class TeleopServer(Node):  # type: ignore[misc]
         # policy must reproduce); stamped on the node clock for offline sync.
         self._norm_pub = self.create_publisher(TwistStamped, "cmd_norm", 10)
         # Arm + LED: latched, published only when a fresh command arrives (the
-        # firmware holds them), so they never decay like the drive Twist.
+        # firmware holds them), so they never decay like the drive Twist. Drained
+        # by their own faster timer (self._servo_timer) rather than the drive tick.
         self._servo_pub = self.create_publisher(Float32MultiArray, "servo_cmd", 10)
         self._led_pub = self.create_publisher(Bool, "led_cmd", 10)
 
@@ -252,12 +257,25 @@ class TeleopServer(Node):  # type: ignore[misc]
 
         rate = float(self.get_parameter("publish_rate").value)
         self._timer = self.create_timer(1.0 / rate, self._tick)
+        # Dedicated, faster drain for the latched arm / LED commands. The cockpit
+        # eases the servo target at ~40 Hz and sends only on change; sampling that
+        # from the 20 Hz drive tick dropped every other frame, so the arm stepped
+        # at 20 Hz and looked choppy. Draining at 50 Hz (>= the firmware's servo
+        # frame) passes the full stream through without changing the drive rate.
+        # Both timers run on the ROS executor, so rclpy is still only touched from
+        # the ROS side -- the asyncio WebSocket thread never publishes.
+        servo_rate = float(self.get_parameter("servo_publish_rate").value)
+        self._servo_timer = self.create_timer(1.0 / servo_rate, self._publish_latched)
 
         self.get_logger().info(f"teleop_server up: ws://{host}:{port} -> cmd_vel")
 
     def _tick(self) -> None:
-        """Publish the latest command on cmd_vel, plus its normalised twin on
-        cmd_norm for logging; both zero if the client is stale / unmanned."""
+        """Publish the latest drive command on cmd_vel, plus its normalised twin
+        on cmd_norm for logging; both zero if the client is stale / unmanned.
+
+        Arm / LED are set-and-hold commands drained on their own faster timer
+        (``_publish_latched``), not here: gating them on this 20 Hz drive tick
+        decimated the cockpit's ~40 Hz eased servo stream and made the arm step."""
         vx_norm, wz_norm, age, has_client = self._store.snapshot()
         live = has_client and age <= self._hold_timeout
 
@@ -272,12 +290,13 @@ class TeleopServer(Node):  # type: ignore[misc]
             norm_vx, norm_wz = command_to_norm(vx_norm, wz_norm)
         self._pub.publish(twist)
         self._publish_norm(norm_vx, norm_wz)
-        self._publish_latched()
 
     def _publish_latched(self) -> None:
         """Publish a pending arm / LED command once, if one arrived since the last
-        tick. Set-and-hold: no client-liveness gate and no decay -- the firmware
-        keeps the last servo pulse / LED state on its own, unlike the wheels."""
+        servo tick. Runs on its own ~50 Hz timer (not the 20 Hz drive tick) so the
+        cockpit's eased servo stream passes through undecimated. Set-and-hold: no
+        client-liveness gate and no decay -- the firmware keeps the last servo
+        pulse / LED state on its own, unlike the wheels."""
         servo = self._store.take_servo()
         if servo is not None:
             self._servo_pub.publish(Float32MultiArray(data=[servo[0], servo[1]]))
