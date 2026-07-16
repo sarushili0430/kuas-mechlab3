@@ -22,7 +22,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Bring up the traffic-light detector."""
+    """Bring up the traffic-light detector subscribed to the camera topic."""
     # ParameterValue pins the type so the string launch args reach the typed
     # node parameters as int (a bare substitution would stay a string).
     team_number = ParameterValue(LaunchConfiguration("team_number"), value_type=int)
