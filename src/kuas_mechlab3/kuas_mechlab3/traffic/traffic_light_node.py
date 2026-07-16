@@ -14,6 +14,12 @@ here; the publish decision (detection + colour -> the exact wire string, or
 nothing) is delegated to ``light_logic.status_message`` so that output IO
 contract is unit-tested by pytest without a ROS2 environment or a camera.
 
+The whole per-frame stage (JPEG decode + YOLO + HSV) is rate-limited by the
+shared ``throttle.DecodeThrottle`` (``detect_interval``, default 0.4 s =
+2.5 Hz): running YOLO at the camera's full 30 Hz saturated the Pi (~140% CPU
+measured, thermal soft-throttling at 83 °C) and starved the rest of the
+stack, while a traffic light only changes on a seconds scale.
+
 Requires ``ultralytics`` (YOLOv8), a pip package rather than a rosdep key:
 ``pip install ultralytics``.
 """
@@ -23,6 +29,7 @@ from typing import Any
 import cv2
 import numpy as np
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage
@@ -30,6 +37,7 @@ from std_msgs.msg import String
 from ultralytics import YOLO
 
 from kuas_mechlab3.traffic.light_logic import status_message
+from kuas_mechlab3.traffic.throttle import DecodeThrottle
 
 # COCO class id 9 is "traffic light" -- restrict YOLO to just that class.
 _TRAFFIC_LIGHT_CLASS = 9
@@ -54,6 +62,7 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
         self.declare_parameter("image_topic", "/front_camera/image_raw/compressed")
         self.declare_parameter("model", "yolov8n.pt")
         self.declare_parameter("imgsz", 256)
+        self.declare_parameter("detect_interval", 0.4)
         self.declare_parameter("show_window", False)
 
         self._team_number = int(self.get_parameter("team_number").value)
@@ -61,7 +70,13 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
         self._show_window = bool(self.get_parameter("show_window").value)
         model_path = str(self.get_parameter("model").value)
         image_topic = str(self.get_parameter("image_topic").value)
+        detect_interval = float(self.get_parameter("detect_interval").value)
 
+        # Same clock choice as qr_detector: the Pi has no RTC, so its wall
+        # clock jumps when NTP corrects it after boot; the throttle needs
+        # monotonic time.
+        self._clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self._throttle = DecodeThrottle(interval_s=detect_interval)
         self._model = YOLO(model_path)
         self._pub = self.create_publisher(String, "traffic_light_topic", 10)
         # Match camera_node's sensor QoS (best-effort) or no frames arrive.
@@ -71,11 +86,20 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
 
         self.get_logger().info(
             f"traffic_light up: team={self._team_number} "
-            f"{image_topic} -> {self._pub.topic_name}"
+            f"{image_topic} -> {self._pub.topic_name} "
+            f"(detect_interval={detect_interval}s)"
         )
 
+    def _now_s(self) -> float:
+        return float(self._clock.now().nanoseconds) / 1e9
+
     def _on_image(self, msg: CompressedImage) -> None:
-        """Decode one camera frame and publish its team-tagged colour status."""
+        """Decode one camera frame (rate-limited) and publish its colour status."""
+        # Bail before the JPEG decode so a skipped frame costs nothing (same
+        # pattern as qr_detector). The light cannot be missed at 2.5 Hz: it
+        # stays green for seconds, not frames.
+        if not self._throttle.should_decode(self._now_s()):
+            return
         frame = cv2.imdecode(
             np.frombuffer(bytes(msg.data), dtype=np.uint8), cv2.IMREAD_COLOR
         )
@@ -95,11 +119,12 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
 
     def _detect(self, frame: Any) -> tuple[bool, int, int, int]:
         """Return (light in view?, red, green, yellow HSV pixel counts) for a frame."""
+        # NOTE: no vid_stride here -- it only strides video/stream inputs, so
+        # it never throttled these single-frame calls; DecodeThrottle does.
         results = self._model(
             frame,
             classes=[_TRAFFIC_LIGHT_CLASS],
             imgsz=self._imgsz,
-            vid_stride=2,
             verbose=False,
         )
         detected = any(bool(result.boxes) for result in results)

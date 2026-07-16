@@ -39,6 +39,55 @@ def parse_command(raw: str) -> tuple[float, float] | None:
     return vx, wz
 
 
+def parse_servo_command(raw: str) -> tuple[float, float] | None:
+    """Parse one ``{"servo": [shoulder_deg, elbow_deg]}`` message into (sh, el).
+
+    Returns None for anything that is not a well-formed servo command -- bad JSON,
+    a non-object, a missing "servo" key, a value that is not a 2-element list, or a
+    non-numeric / non-finite element -- so the caller can simply ignore it (mirrors
+    ``parse_command``). Angle->pulse calibration + clamping live downstream in
+    ``protocol.angle_to_us``; this only validates and extracts the pair.
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or "servo" not in data:
+        return None
+    servo = data["servo"]
+    if not isinstance(servo, list) or len(servo) != 2:
+        return None
+    try:
+        shoulder = float(servo[0])
+        elbow = float(servo[1])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(shoulder) and math.isfinite(elbow)):
+        return None
+    return shoulder, elbow
+
+
+def parse_led_command(raw: str) -> bool | None:
+    """Parse one ``{"led": true|false}`` message into a bool, else None.
+
+    Returns None for anything that is not a well-formed LED command -- bad JSON, a
+    non-object, a missing "led" key, or a value that is not a bool or a 0|1 int --
+    so the caller can simply ignore it (mirrors ``parse_command``).
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or "led" not in data:
+        return None
+    value = data["led"]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def command_to_twist(
     vx_norm: float,
     wz_norm: float,

@@ -680,10 +680,19 @@ ros2 run rqt_image_view rqt_image_view     # GUI があれば compressed トピ�
 | `light_logic.py` | 色判定（ピクセル数→色）と publish 判断 `status_message`（検出＋色→`<team><Color>` or 無出力）。**入出力契約の純ロジック** | pytest |
 | `traffic_light_node.py` | ROSノード: カメラトピック購読→JPEGデコード→YOLO検出→HSVで色判定→publish | colcon |
 | `traffic_subscriber.py` | ROSノード: `traffic_light_topic` を購読しログ出力 | colcon |
+| `qr_logic.py` | QR タスク(#5)の LED 点灯判断 `QrLedPolicy`（QR が読める間は点灯＋消灯タイムアウト、エッジ検出）の純ロジック | pytest |
+| `throttle.py` | #5/#9 共有のフレーム間引き `DecodeThrottle`（重いフレーム毎処理を数 Hz に制限する純ロジック） | pytest |
+| `qr_detector.py` | ROSノード: 前カメラ購読 → cv2 で QR デコード → `qr_topic` に payload を publish ＋ 機体 LED(`led_cmd`)を点灯 | colcon |
 
 > **publish の判断（出力 IO）は `light_logic.status_message` に集約**し pytest で担保している。信号機が写っていない／色が曖昧（`unknown`）なフレームでは `None` を返して**何も publish しない**（誤った状態を流さない）。ノード側は「デコード→検出→`status_message`→publish」の薄い配線に徹する。
 
 > `traffic_light` は YOLOv8（`ultralytics`）を使う。`ultralytics` は rosdep キーではなく pip パッケージなので `package.xml` には入れず、ROS2 環境の Python に一度だけ `pip install ultralytics` で入れておく（初回実行時にモデル `yolov8n.pt` も自動ダウンロードされる）。画面のないラズパイでは既定の `show_window:=false` のまま実行する。
+
+> **機体 LED は信号機タスクでは使わない**: 信号機タスク（#9）は「検出 → `11Green` を publish → 無線でバリアを開ける」で完結し、LED は関与しない。機体 LED は **QR コードタスク（#5）** 用なので、`traffic_launch.py` は LED を駆動しない。
+
+> **YOLO 推論は `detect_interval`（既定 0.4 秒 = 2.5Hz）で間引く**: カメラの 30Hz 全フレームで推論すると Pi の CPU が飽和し（実測 ~140% CPU、83°C でサーマルスロットリング）、テレオペ映像の配信まで巻き添えになる。信号は数秒単位でしか変わらないので 2.5Hz で取り逃しはない。間引きは #5 と共有の `throttle.DecodeThrottle`（pytest）で、JPEG デコードの手前でフレームごと丸ごとスキップする。なお以前渡していた `vid_stride=2` は動画ストリーム入力専用の引数で、単発フレーム推論には無効だったため削除した。
+
+> **QR コードタスク（#5）**: `qr_detector` は `start-all.sh` が **常時起動**する（`qr_launch.py`、単体なら `ros2 launch kuas_mechlab3 qr_launch.py`）。前カメラの QR を cv2 の `QRCodeDetector` でデコードし、payload を `qr_topic` に publish しつつ、**QR が読める間だけ**機体 LED（`led_cmd`）を点灯する（外すと約 1 秒の watchdog で消灯）。実機実測: 320×240 のまま **76% のフレームでデコード成功**（カードを回転させても成立）。pyzbar / libzbar は不要（cv2 は既存の依存）。**`decode_interval`（既定 0.2 秒 = 約 5Hz）でデコードを間引く**: 信号機検出（#9）と同じ Pi・同じカメラを共有しており、#9 は緑を取り逃せない（QR タスクにその制約は無い）ため、重い方を間引いて#9 に CPU を譲る。判定は純ロジック（`qr_logic.QrLedPolicy` + #9 と共有の `throttle.DecodeThrottle`、pytest）で、**変化したときだけ** publish するのでコックピットの手動 LED と競合しにくい。**未対応**: 課題 #5 の「QR ごとに色を変える」は機体 LED が緑単色 on/off のため不可（多色 LED が前提）。
 
 ### 実行（ROS2 Humble 上）
 
@@ -957,6 +966,8 @@ sudo systemctl stop kuas-mechlab3                     # 一時停止（start-all
 
 > 信号機検出は `ultralytics`（YOLOv8）が要る。boot 常駐にする前に `pip install ultralytics` と **モデル `yolov8n.pt` の事前ダウンロード**（初回実行が取得するので一度オンラインで走らせておく）を済ませること。オフライン会場で初回 DL に失敗すると信号機ノードだけ上がらない。
 
+> **ワンショット導入 & 再現性**: `scripts/install-services.sh`（root で実行）がユニット配置・有効化・競合ユニット無効化・モデル事前取得（`scripts/prefetch-model.sh`）をまとめて行う。カメラは `/dev/videoN` が毎起動で入れ替わるため **USB ポート（by-path）で固定**する — `scripts/detect-cameras.sh` で前後の by-path を確認してユニットの `FRONT_DEVICE`/`REAR_DEVICE` に設定（この機体: 前=ポート 1.4 / 後=ポート 1.3）。操縦 UI 配信は `scripts/ml3-cockpit.service`（`:8000`）。**当日の電源投入→確認→復旧手順は [`docs/competition-runbook.md`](./docs/competition-runbook.md)**。
+
 **`scripts/start-record.sh`** — 人間のデモ走行を **1 エピソード = 1 bag + `meta.json`** で記録する（模倣学習のデータ収集 / 下記「自律化ロードマップ」Phase 2）。先に driver・カメラ・teleop を起動しておく（別ターミナル or `start-all.sh`）。記録するのは `/cmd_norm`（行動ラベル）+ 前後カメラ + `cmd_vel` / 車輪テレメトリ。
 
 ```bash
@@ -1076,7 +1087,9 @@ while True:
 │       │   └── traffic/      # 信号機検出（下記「信号機検出」参照）
 │       │       ├── light_logic.py           # 純: 色判定 + publish 判断（status_message）
 │       │       ├── traffic_light_node.py    # ROSノード: カメラ購読→YOLO/HSV→publish
-│       │       └── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       │       ├── traffic_subscriber.py    # ROSノード: traffic_light_topic 購読→ログ
+│       │       ├── qr_logic.py              # 純: QR タスク #5 の LED 判断 QrLedPolicy
+│       │       └── qr_detector.py           # ROSノード: 前カメラ→cv2 QR デコード→qr_topic + led_cmd
 │       ├── launch/           # ros2 launch ファイル（drivetrain / cameras / teleop / record / traffic）
 │       ├── test/             # 純 Python のユニットテスト（pytest）
 │       ├── package.xml       # ROS パッケージ定義 / 依存（rosdep）
@@ -1084,10 +1097,14 @@ while True:
 │       └── setup.cfg
 ├── firmware/
 │   └── robot/                # STM32 NUCLEO-F091RC ファーム（PlatformIO/Mbed。上記「Nucleo ファームウェア」参照）
-├── docs/                     # 補足ドキュメント（autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
+├── docs/                     # 補足ドキュメント（competition-runbook.md / autonomy-plan.md / teleop-client.md / cockpit.html / robot-pinout-power-reference.md(+.pdf)）
 ├── scripts/                  # bring-up 用スクリプト
 │   ├── start-all.sh          # driver + カメラ + teleop + 録画 + 信号機を一発起動（Ctrl+C で一括停止）
 │   ├── kuas-mechlab3.service # 上を boot 時から常駐させる systemd ユニット定義
+│   ├── ml3-cockpit.service   # 操縦 UI（cockpit）を :8000 で配信する systemd ユニット
+│   ├── install-services.sh   # 上 2 ユニットを配置・有効化・競合無効化・モデル事前取得（sudo）
+│   ├── detect-cameras.sh     # 前後カメラの by-path を特定（USB ポートで固定）
+│   ├── prefetch-model.sh     # YOLO の yolov8n.pt を事前取得（オフライン会場対策）
 │   ├── start-teleop.sh       # テレオプ WS ブリッジだけ起動
 │   ├── start-cameras.sh      # 前後カメラ + MJPEG 配信だけ起動
 │   ├── start-record.sh       # デモ走行を rosbag 録画（模倣学習データ収集）

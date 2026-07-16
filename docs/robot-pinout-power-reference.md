@@ -59,14 +59,21 @@ I²C address **0x28**. Use the **Adafruit BNO055 breakout** (onboard 10 kΩ pull
 shift + 3.3 V regulator) → Vin can be 3.3 V or 5 V; SDA/SCL wire straight to D14/D15.
 A bare BNO055 chip would need external pull-ups added.
 
-### 1d. Servos — DS3225 ×2 on TIM15 (50 Hz)
-| Servo | Solder pad | MCU | Firmware token | Timer·ch |
-|-------|-----------|-----|----------------|----------|
-| Servo 1 (shoulder) | **PB_14** | PB_14 | `PB_14_ALT0` | TIM15_CH1 |
-| Servo 2 (elbow)    | **PB_15** | PB_15 | `PB_15_ALT1` | TIM15_CH2 |
+### 1d. Servos — arm shoulder/elbow, **software PWM on A0/A1** (50 Hz)
+| Servo | Solder pad | MCU | Firmware token | Drive |
+|-------|-----------|-----|----------------|-------|
+| Servo 1 (shoulder) | **A0** | PA_0 | `A0` | soft-PWM (`Ticker` + `Timeout`) |
+| Servo 2 (elbow)    | **A1** | PA_1 | `A1` | soft-PWM (`Ticker` + `Timeout`) |
 
 Signal is the **only** servo wire to the Nucleo (3.3 V pulse drives them fine).
 **V+ and GND go to the dedicated servo rail** — never the Nucleo (see §4).
+Pulse band **500–2500 µs = 0–180°**; positional servos hold steady on this soft-PWM (verified).
+
+> **Why software PWM, not a hardware timer:** every hardware-PWM timer is taken — the 4
+> motors use TIM1/3/16/17 and Mbed's µs-ticker owns TIM2, and TIM15's only free pads
+> (PB_14/PB_15) measured shorted on this board. So the two pulses are made in firmware: a
+> 20 ms `Ticker` frame raises both pins, a per-servo `Timeout` drops each after its width.
+> That needs no timer channel and works on **any** GPIO — hence the free A0/A1 header pins.
 
 ### 1e. Serial → Pi — USART2 over the ST-Link USB (VCP)
 | Signal | MCU | Firmware token | Note |
@@ -80,11 +87,20 @@ MotorCtrl motor1(D7, D8,            D6, PB_2);        // FL
 MotorCtrl motor2(D5, D4,            D9, D10);         // BL
 MotorCtrl motor3(PA_7_ALT2, PA_6_ALT0, PC_8, PC_9);  // FR  (5 V-tolerant enc)
 MotorCtrl motor4(D2, PA_11,         PC_12, PA_15);    // BR
-Servo  s1(PB_14_ALT0);   // shoulder
-Servo  s2(PB_15_ALT1);   // elbow
+// arm servos: software PWM on A0 / A1 (§1d) — no Servo/PwmOut object
 BNO055 imu(D14, D15);
 SerialROS2 pc(USBTX, USBRX, 115200);
 ```
+
+### 1g. Status LED — green, on/off, D3
+| LED | Solder pad | MCU | Firmware token | Series R |
+|-----|-----------|-----|----------------|----------|
+| Green (task indicator) | **D3** | PB_3 | `D3` | 220 Ω |
+
+Anode → **220 Ω** → D3; cathode → GND. Plain `DigitalOut`, on/off (wire packet `v/l`).
+Distinct from the board's own **LD2** on PA_5 (reserved, §2). Note: the challenge QR task
+asks the LED to *change colour* — a single green covers only on/off, so an RGB LED may
+replace this later.
 
 ---
 

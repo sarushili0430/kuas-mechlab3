@@ -39,11 +39,14 @@ import rclpy
 import websockets
 from geometry_msgs.msg import Twist, TwistStamped
 from rclpy.node import Node
+from std_msgs.msg import Bool, Float32MultiArray
 
 from kuas_mechlab3.drive.teleop_command import (
     command_to_norm,
     command_to_twist,
     parse_command,
+    parse_led_command,
+    parse_servo_command,
 )
 
 
@@ -62,6 +65,11 @@ class CommandStore:
         self._wz = 0.0
         self._stamp = 0.0
         self._clients = 0
+        # Latched arm / LED commands: set on arrival, taken once by the ROS timer
+        # then cleared (None = nothing pending). Unlike drive they are NOT decayed
+        # on staleness -- the firmware holds the last servo pulse / LED state.
+        self._servo: tuple[float, float] | None = None
+        self._led: bool | None = None
 
     def set_command(self, vx: float, wz: float) -> None:
         """Replace the latest command and re-stamp it (WebSocket thread)."""
@@ -69,6 +77,28 @@ class CommandStore:
             self._vx = vx
             self._wz = wz
             self._stamp = time.monotonic()
+
+    def set_servo(self, shoulder: float, elbow: float) -> None:
+        """Latch a new arm command in degrees (WebSocket thread)."""
+        with self._lock:
+            self._servo = (shoulder, elbow)
+
+    def set_led(self, on: bool) -> None:
+        """Latch a new LED on/off command (WebSocket thread)."""
+        with self._lock:
+            self._led = on
+
+    def take_servo(self) -> tuple[float, float] | None:
+        """Return the pending arm command and clear it, else None (ROS thread)."""
+        with self._lock:
+            servo, self._servo = self._servo, None
+            return servo
+
+    def take_led(self) -> bool | None:
+        """Return the pending LED command and clear it, else None (ROS thread)."""
+        with self._lock:
+            led, self._led = self._led, None
+            return led
 
     def add_client(self) -> None:
         """Register a newly connected client."""
@@ -154,9 +184,19 @@ class _CommandWsServer:
         try:
             async for message in websocket:
                 text = message.decode() if isinstance(message, bytes) else message
-                parsed = parse_command(text)
-                if parsed is not None:
-                    self._store.set_command(*parsed)
+                # One socket carries three command shapes; the parsers are
+                # mutually exclusive, so try each in turn (drive / arm / LED).
+                drive = parse_command(text)
+                if drive is not None:
+                    self._store.set_command(*drive)
+                    continue
+                servo = parse_servo_command(text)
+                if servo is not None:
+                    self._store.set_servo(*servo)
+                    continue
+                led = parse_led_command(text)
+                if led is not None:
+                    self._store.set_led(led)
         except websockets.ConnectionClosed:
             pass
         finally:
@@ -200,6 +240,10 @@ class TeleopServer(Node):  # type: ignore[misc]
         # Normalised twin of cmd_vel for imitation-learning logs (the action a
         # policy must reproduce); stamped on the node clock for offline sync.
         self._norm_pub = self.create_publisher(TwistStamped, "cmd_norm", 10)
+        # Arm + LED: latched, published only when a fresh command arrives (the
+        # firmware holds them), so they never decay like the drive Twist.
+        self._servo_pub = self.create_publisher(Float32MultiArray, "servo_cmd", 10)
+        self._led_pub = self.create_publisher(Bool, "led_cmd", 10)
 
         self._server = _CommandWsServer(
             host, port, self._store, ping_interval, ping_timeout
@@ -228,6 +272,18 @@ class TeleopServer(Node):  # type: ignore[misc]
             norm_vx, norm_wz = command_to_norm(vx_norm, wz_norm)
         self._pub.publish(twist)
         self._publish_norm(norm_vx, norm_wz)
+        self._publish_latched()
+
+    def _publish_latched(self) -> None:
+        """Publish a pending arm / LED command once, if one arrived since the last
+        tick. Set-and-hold: no client-liveness gate and no decay -- the firmware
+        keeps the last servo pulse / LED state on its own, unlike the wheels."""
+        servo = self._store.take_servo()
+        if servo is not None:
+            self._servo_pub.publish(Float32MultiArray(data=[servo[0], servo[1]]))
+        led = self._store.take_led()
+        if led is not None:
+            self._led_pub.publish(Bool(data=led))
 
     def _publish_norm(self, vx: float, wz: float) -> None:
         """Publish the normalised command (vx, wz in [-1, 1]) on cmd_norm, stamped

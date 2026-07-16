@@ -6,6 +6,8 @@ from kuas_mechlab3.drive.teleop_command import (
     command_to_norm,
     command_to_twist,
     parse_command,
+    parse_led_command,
+    parse_servo_command,
 )
 
 MAX_LINEAR = 0.5
@@ -110,3 +112,89 @@ def test_command_to_norm_keeps_small_input_no_deadzone() -> None:
 
 def test_command_to_norm_zero_is_zero() -> None:
     assert command_to_norm(0.0, 0.0) == pytest.approx((0.0, 0.0))
+
+
+# -- parse_servo_command ----------------------------------------------------
+
+
+def test_parse_servo_command_valid() -> None:
+    assert parse_servo_command('{"servo": [30, 120]}') == pytest.approx((30.0, 120.0))
+
+
+def test_parse_servo_command_accepts_floats() -> None:
+    assert parse_servo_command('{"servo": [30.5, 119.9]}') == pytest.approx(
+        (30.5, 119.9)
+    )
+
+
+def test_parse_servo_command_missing_key_returns_none() -> None:
+    assert parse_servo_command('{"vx": 0.5, "wz": 0.0}') is None
+
+
+def test_parse_servo_command_wrong_length_returns_none() -> None:
+    assert parse_servo_command('{"servo": [30]}') is None
+    assert parse_servo_command('{"servo": [1, 2, 3]}') is None
+
+
+def test_parse_servo_command_non_list_returns_none() -> None:
+    assert parse_servo_command('{"servo": 30}') is None
+
+
+def test_parse_servo_command_non_numeric_returns_none() -> None:
+    assert parse_servo_command('{"servo": ["a", "b"]}') is None
+
+
+def test_parse_servo_command_non_finite_returns_none() -> None:
+    assert parse_servo_command('{"servo": [NaN, 0]}') is None
+
+
+def test_parse_servo_command_bad_json_returns_none() -> None:
+    assert parse_servo_command("{not json") is None
+    assert parse_servo_command("") is None
+
+
+def test_parse_servo_command_non_object_returns_none() -> None:
+    assert parse_servo_command("[30, 120]") is None
+
+
+# -- parse_led_command ------------------------------------------------------
+
+
+def test_parse_led_command_true() -> None:
+    assert parse_led_command('{"led": true}') is True
+
+
+def test_parse_led_command_false() -> None:
+    assert parse_led_command('{"led": false}') is False
+
+
+def test_parse_led_command_accepts_int_0_1() -> None:
+    assert parse_led_command('{"led": 1}') is True
+    assert parse_led_command('{"led": 0}') is False
+
+
+def test_parse_led_command_missing_key_returns_none() -> None:
+    assert parse_led_command('{"vx": 0.5, "wz": 0.0}') is None
+
+
+def test_parse_led_command_non_bool_returns_none() -> None:
+    assert parse_led_command('{"led": "on"}') is None
+    assert parse_led_command('{"led": 2}') is None
+
+
+def test_parse_led_command_bad_json_returns_none() -> None:
+    assert parse_led_command("{not json") is None
+
+
+# -- command dispatch is mutually exclusive ---------------------------------
+
+
+def test_drive_servo_led_parsers_are_mutually_exclusive() -> None:
+    # teleop_server tries each parser in turn; a message must match exactly one,
+    # so the drive path stays non-breaking when servo/LED messages arrive.
+    assert parse_command('{"servo": [30, 120]}') is None
+    assert parse_command('{"led": true}') is None
+    assert parse_servo_command('{"vx": 0.5, "wz": 0.0}') is None
+    assert parse_servo_command('{"led": true}') is None
+    assert parse_led_command('{"vx": 0.5, "wz": 0.0}') is None
+    assert parse_led_command('{"servo": [30, 120]}') is None
