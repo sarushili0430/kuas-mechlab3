@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ml3-robot": {
+      "command": "uv",
+      "args": ["run", "--directory", "mcp-server", "ml3-mcp"],
+      "env": {
+        "ML3_HOST": "192.168.1.42",
+        "ML3_SPEED_SCALE": "0.5",
+        "ML3_MAX_DURATION_S": "3.0"
+      }
+    }
+  }
+}
