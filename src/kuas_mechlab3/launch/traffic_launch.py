@@ -7,12 +7,14 @@ it sees a green light it publishes "<team>Green" (e.g. "11Green") to
 traffic_light_topic, the string the on-field barrier opens for:
 
     ros2 launch kuas_mechlab3 traffic_launch.py team_number:=11 \\
-        image_topic:=/front_camera/image_raw/compressed detect_interval:=0.4
+        image_topic:=/front_camera/image_raw/compressed detect_interval:=1.0
 
 ``detect_interval`` rate-limits the per-frame stage (JPEG decode + YOLO + HSV,
-default 0.4 s = 2.5 Hz): at the camera's full 30 Hz the inference saturated the
-Pi's CPU and pushed it into thermal throttling, while a light only changes on a
-seconds scale. Raise it (e.g. 1.0) to spend even less CPU.
+default 1.0 s): at the camera's full 30 Hz the inference saturated the Pi's CPU
+and pushed it into thermal throttling, while a light only changes on a seconds
+scale. One inference takes ~520 ms wall on the robot, so intervals below that
+(the previous 0.4 s included) never actually skip a frame -- the node just runs
+back-to-back at ~123% CPU; 1.0 s halves that.
 
 Needs a camera publishing frames (cameras_launch or a camera_node) and the
 ultralytics pip package (`pip install ultralytics`; downloads yolov8n.pt on the
@@ -45,7 +47,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="/front_camera/image_raw/compressed",
             ),
             DeclareLaunchArgument("imgsz", default_value="256"),
-            DeclareLaunchArgument("detect_interval", default_value="0.4"),
+            DeclareLaunchArgument("detect_interval", default_value="1.0"),
             Node(
                 package="kuas_mechlab3",
                 executable="traffic_light",
