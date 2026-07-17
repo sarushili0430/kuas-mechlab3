@@ -31,7 +31,7 @@ User=pi
 WorkingDirectory=/home/pi/kuas-mechlab3
 ExecStart=/home/pi/kuas-mechlab3/scripts/start-all.sh
 # Team separation: keep this in sync with ROS_DOMAIN_ID across the field.
-Environment=ROS_DOMAIN_ID=11
+Environment=ROS_DOMAIN_ID=0
 # Map the cameras by USB PORT, not /dev/videoN: both C270s share a serial (so by-id
 # cannot tell them apart) and /dev/videoN re-enumerates across reboots -- this robot
 # boots front=video2/rear=video0, the reverse of start-all.sh's video0,2 defaults, so

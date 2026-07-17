@@ -515,7 +515,7 @@ sudo usermod -aG dialout $USER
 ls /dev/ttyACM*                  # ポート確認（通常 /dev/ttyACM0）
 
 source /opt/ros/humble/setup.bash
-export ROS_DOMAIN_ID=11          # チーム分離用。自チームの ID に変更
+export ROS_DOMAIN_ID=0           # チーム分離用。自チームの ID に変更
 ```
 
 ### 2. ビルド
@@ -852,7 +852,7 @@ ros2 run kuas_mechlab3 teleop_ws_client --url ws://localhost:9001
 ```bash
 cd ~/kuas-mechlab3
 source /opt/ros/humble/setup.bash
-export ROS_DOMAIN_ID=11                       # 3 ターミナルとも同じ値にする
+export ROS_DOMAIN_ID=0                        # 3 ターミナルとも同じ値にする
 # 初回だけビルド（2 回目以降は不要）:
 # colcon build --packages-select kuas_mechlab3
 source install/setup.bash
@@ -922,7 +922,7 @@ hostname -I        # 例: 192.168.1.42  ← 先頭のアドレス
 
 | 環境変数 | 既定値 | 意味 |
 | --- | --- | --- |
-| `ROS_DOMAIN_ID` | `11` | DDS ドメイン。**PC 側で別ノードを動かすなら合わせる**（手動手順と同じ） |
+| `ROS_DOMAIN_ID` | `0` | DDS ドメイン。**PC 側で別ノードを動かすなら合わせる**（手動手順と同じ） |
 | `ROS_SETUP` | `/opt/ros/humble/setup.bash` | ROS2 本体の `setup.bash`。Humble 以外を使うとき用 |
 
 **`scripts/start-teleop.sh`** — テレオプだけ（driver もカメラも既に動いている時に、ブリッジだけ立て直したい等）。
