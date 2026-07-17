@@ -3,7 +3,7 @@
 # 責任分離: ここは「環境を整える」だけを担い、ノードの起動は呼び出し側が行う。
 #
 # 上書き可能な環境変数:
-#   ROS_DOMAIN_ID  ノード同士が見える DDS ドメイン（既定 11。複数ターミナルで揃える）
+#   ROS_DOMAIN_ID  ノード同士が見える DDS ドメイン（既定 0。複数ターミナルで揃える）
 #   ROS_SETUP      ROS2 本体の setup.bash（既定 /opt/ros/humble/setup.bash）
 set -euo pipefail
 
@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # ノード同士が見えるよう、全ターミナルで同じ値にする
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-11}"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 
 # ROS2 本体
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"

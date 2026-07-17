@@ -8,7 +8,7 @@
 >
 > 前提: `scripts/install-services.sh` 済みで、`kuas-mechlab3.service`(ロボット一式)と
 > `ml3-cockpit.service`(操縦 UI 配信)が enable されている。電源を入れるだけでスタックは
-> 自動起動する。`ROS_DOMAIN_ID` はチーム番号に合わせる(既定 11)。
+> 自動起動する。`ROS_DOMAIN_ID` はチーム番号に合わせる(既定 0)。
 
 ## 0. ネットワーク
 - ロボットと操縦 PC を同じネットワーク(競技 WiFi。SSID/パスワードは運営/チームの私的メモ)に接続。
@@ -17,7 +17,7 @@
 ## 1. 電源投入 → 自動起動の確認
 ```bash
 ssh <user>@<ROBOT_IP>
-source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=11
+source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=0
 
 # サービスが両方 active か
 systemctl is-active kuas-mechlab3 ml3-cockpit          # → active / active
