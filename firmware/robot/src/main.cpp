@@ -45,6 +45,7 @@ static const int  SERVO_COUNT     = 2;
 static const int  SERVO_PERIOD_US = 20000;  // 50 Hz
 static const int  SERVO_MIN_US    = 500;    // 安全下限（protocol.py と一致）
 static const int  SERVO_MAX_US    = 2500;   // 安全上限（protocol.py と一致）
+static const int  SERVO_SLEW_US_PER_FRAME = 25;  // 出力の追従上限 25us/20ms ≈ 112°/s（Home ジャンプ等の突入電流対策）
 static const char SERVO_EOP       = 'a';    // サーボ指令パケットの終端
 
 // ===== 車載 LED: 緑単色 on/off（docs: robot-pinout-power-reference §3c）=====
@@ -81,20 +82,34 @@ private:
 // 駆動系(TIM1/3/16/17) と us_ticker(TIM2) で HW タイマが枯渇し 50Hz サーボ用の空き ch が
 // 無い。→ us_ticker ベースの Ticker/Timeout でソフト PWM を生成（HW PWM 非依存＝配線ピン
 // は任意 GPIO）。20ms 毎に servo_frame_isr が有効パルスのピンを上げ、各パルス幅[us]後の
-// Timeout で下げる。servo_us は次フレームで反映（グリッチ無し）。起動時 servo_us=0=無
-// パルスで最初の指令までアームは動かない。車輪と違いウォッチドッグでは中立化せず、最後に
-// 指令したパルスを保持し続ける。ジッタは割込み遅延程度（数us≪パルス幅）でサーボは許容。
+// Timeout で下げる。出力(servo_us)は目標(servo_target_us)へ毎フレーム最大
+// SERVO_SLEW_US_PER_FRAME だけ追従する（急峻なステップ目標に DS3225 が最大トルクで
+// 飛びつく＝突入電流を機体側で吸収）。起動時は無パルスでアームは脱力しており、現在姿勢が
+// 不明でランプ起点を作れないため初回指令のみ直行。車輪と違いウォッチドッグでは中立化せず、
+// 最後の目標を保持し続ける。ジッタは割込み遅延程度（数us≪パルス幅）でサーボは許容。
 static DigitalOut servo_pin0(A0);          // s1=shoulder
 static DigitalOut servo_pin1(A1);          // s2=elbow
 static Ticker     servo_frame;             // 20ms フレーム先頭
 static Timeout    servo_off0, servo_off1;  // 立下りワンショット
-static int servo_us[SERVO_COUNT] = {0, 0};
+static volatile int servo_target_us[SERVO_COUNT] = {0, 0};  // 受理済み指令（クランプ後）
+static int servo_us[SERVO_COUNT] = {0, 0};                  // 実際に出している幅（ISR 専有）
 
 static void servo0_low() { servo_pin0 = 0; }
 static void servo1_low() { servo_pin1 = 0; }
 
-// フレーム先頭（20ms 毎）: 有効パルスのピンを上げ、幅[us]後に下げる Timeout を仕込む。
+// 出力パルス幅を目標へ 1 フレームぶん近づける。cur==0（初回・無パルス）は直行。
+static int servo_slew(int cur, int target) {
+    if (cur == 0 || target == 0) return target;
+    if (target > cur + SERVO_SLEW_US_PER_FRAME) return cur + SERVO_SLEW_US_PER_FRAME;
+    if (target < cur - SERVO_SLEW_US_PER_FRAME) return cur - SERVO_SLEW_US_PER_FRAME;
+    return target;
+}
+
+// フレーム先頭（20ms 毎）: スルーレート制限で目標へ近づけ、有効パルスのピンを上げて
+// 幅[us]後に下げる Timeout を仕込む。
 static void servo_frame_isr() {
+    servo_us[0] = servo_slew(servo_us[0], servo_target_us[0]);
+    servo_us[1] = servo_slew(servo_us[1], servo_target_us[1]);
     if (servo_us[0] > 0) {
         servo_pin0 = 1;
         servo_off0.attach(&servo0_low, std::chrono::microseconds(servo_us[0]));
@@ -111,11 +126,12 @@ static void servo_init() {
     servo_frame.attach(&servo_frame_isr, std::chrono::microseconds(SERVO_PERIOD_US));  // 50 Hz
 }
 
-// ch=0:shoulder(A0) / ch=1:elbow(A1)。us を安全帯にクランプ、反映は次フレーム。
+// ch=0:shoulder(A0) / ch=1:elbow(A1)。us を安全帯にクランプして目標に据える。
+// 出力は servo_frame_isr がスルーレート制限付きで追従（反映は次フレーム以降）。
 static void servo_apply_us(int ch, int us) {
     if (us < SERVO_MIN_US) us = SERVO_MIN_US;
     if (us > SERVO_MAX_US) us = SERVO_MAX_US;
-    servo_us[ch] = us;
+    servo_target_us[ch] = us;
 }
 
 static BufferedSerial pc(USBTX, USBRX, 115200);
@@ -167,7 +183,7 @@ int main() {
                     for (int i = 0; i < SERVO_COUNT; i++) servo_apply_us(i, u[i]);
                     char ack[40];
                     int n = snprintf(ack, sizeof(ack), "srv %d %d\n",
-                                     servo_us[0], servo_us[1]);
+                                     servo_target_us[0], servo_target_us[1]);
                     pc.write(ack, n);
                 }
                 rx_len = 0;
