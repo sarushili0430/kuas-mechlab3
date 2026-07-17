@@ -218,6 +218,7 @@ class TeleopServer(Node):  # type: ignore[misc]
         self.declare_parameter("host", "0.0.0.0")
         self.declare_parameter("port", 9001)
         self.declare_parameter("publish_rate", 20.0)
+        self.declare_parameter("latched_rate", 100.0)
         self.declare_parameter("hold_timeout", 0.4)
         self.declare_parameter("max_linear", 0.5)
         self.declare_parameter("max_angular", 2.0)
@@ -252,6 +253,13 @@ class TeleopServer(Node):  # type: ignore[misc]
 
         rate = float(self.get_parameter("publish_rate").value)
         self._timer = self.create_timer(1.0 / rate, self._tick)
+        # Arm / LED are drained on their own faster timer: the cockpit eases the
+        # servo target at ~40 Hz, so gating the latch on the 20 Hz drive tick
+        # would drop every other sample and double the effective step size.
+        latched_rate = float(self.get_parameter("latched_rate").value)
+        self._latched_timer = self.create_timer(
+            1.0 / latched_rate, self._publish_latched
+        )
 
         self.get_logger().info(f"teleop_server up: ws://{host}:{port} -> cmd_vel")
 
@@ -272,12 +280,13 @@ class TeleopServer(Node):  # type: ignore[misc]
             norm_vx, norm_wz = command_to_norm(vx_norm, wz_norm)
         self._pub.publish(twist)
         self._publish_norm(norm_vx, norm_wz)
-        self._publish_latched()
 
     def _publish_latched(self) -> None:
         """Publish a pending arm / LED command once, if one arrived since the last
         tick. Set-and-hold: no client-liveness gate and no decay -- the firmware
-        keeps the last servo pulse / LED state on its own, unlike the wheels."""
+        keeps the last servo pulse / LED state on its own, unlike the wheels.
+        Runs on its own timer (latched_rate, faster than the drive tick) so a
+        client streaming eased servo targets is forwarded without decimation."""
         servo = self._store.take_servo()
         if servo is not None:
             self._servo_pub.publish(Float32MultiArray(data=[servo[0], servo[1]]))
