@@ -35,7 +35,7 @@ class QrDetector(Node):  # type: ignore[misc]
     def __init__(self) -> None:
         super().__init__("qr_detector")
         self.declare_parameter("off_timeout", 1.0)
-        self.declare_parameter("decode_interval", 0.2)
+        self.declare_parameter("decode_interval", 0.5)
         self.declare_parameter("image_topic", "/front_camera/image_raw/compressed")
         self.declare_parameter("qr_topic", "qr_topic")
         self.declare_parameter("led_topic", "led_cmd")

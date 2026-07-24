@@ -6,13 +6,15 @@ alongside cameras_launch / start-all.sh without contending for the webcam. It
 decodes with OpenCV's built-in QRCodeDetector, publishes the payload to
 qr_topic, and lights the onboard LED (led_cmd) while a code is readable:
 
-    ros2 launch kuas_mechlab3 qr_launch.py decode_interval:=0.2
+    ros2 launch kuas_mechlab3 qr_launch.py decode_interval:=0.5
 
 ``decode_interval`` rate-limits the decode (~70-105 ms/frame on the robot) so the
 traffic-light detector (#9) -- which shares this Pi and this camera, and unlike
 the QR task must catch the green within a window -- keeps its headroom. The
-default 0.2 s (~5 Hz) is far above what the task needs: the LED watchdog is 1 s
-and the measured decode rate is ~76%.
+default 0.5 s (2 Hz) still refreshes the 1 s LED watchdog with margin; at the
+previous 0.2 s the decode cost ~25-40% CPU and, alongside YOLO, starved the
+camera pipeline (14 Hz with stalls up to 1.9 s measured on the robot -- at
+0.5 s it recovered to a steady 24 Hz).
 
 Needs a camera publishing frames (cameras_launch or a camera_node). OpenCV is
 already a runtime dependency of the camera path, so this adds no new package.
@@ -42,7 +44,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="/front_camera/image_raw/compressed",
             ),
             DeclareLaunchArgument("off_timeout", default_value="1.0"),
-            DeclareLaunchArgument("decode_interval", default_value="0.2"),
+            DeclareLaunchArgument("decode_interval", default_value="0.5"),
             Node(
                 package="kuas_mechlab3",
                 executable="qr_detector",
