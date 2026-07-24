@@ -1,0 +1,54 @@
+# systemd unit: bring the ML3 competition stack up at boot (drivetrain +
+# cameras + teleop WebSocket + record + traffic-light detector) by running
+# scripts/start-all.sh. start-all.sh traps SIGTERM and stops every child
+# cleanly, so `systemctl stop` shuts the whole stack down.
+#
+# Install (or just run scripts/install-services.sh):
+#   sudo cp scripts/kuas-mechlab3.service /etc/systemd/system/
+#   sudoedit /etc/systemd/system/kuas-mechlab3.service   # set User / paths / cameras
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kuas-mechlab3.service
+#   journalctl -u kuas-mechlab3 -f                        # follow the logs
+#
+# Only ONE autostart unit may own the stack: a second enabled unit that also runs
+# start-all.sh double-launches everything (duplicate nodes + cameras fighting over
+# the same device). Disable any other (e.g. an older ml3-ros.service) first.
+#
+# Requires a built workspace (install/setup.bash) and, for the detector,
+# `pip install ultralytics` with yolov8n.pt already fetched
+# (scripts/prefetch-model.sh; the first run downloads it, which needs network).
+
+[Unit]
+Description=KUAS MechLab3 competition bring-up (drivetrain + cameras + teleop + record + traffic)
+# Cameras and DDS want the network up first.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# CHANGE these three to match your robot (README uses the `pi` user under $HOME).
+User=pi
+WorkingDirectory=/home/pi/kuas-mechlab3
+ExecStart=/home/pi/kuas-mechlab3/scripts/start-all.sh
+# Team separation: keep this in sync with ROS_DOMAIN_ID across the field.
+Environment=ROS_DOMAIN_ID=0
+# Map the cameras by USB PORT, not /dev/videoN: both C270s share a serial (so by-id
+# cannot tell them apart) and /dev/videoN re-enumerates across reboots -- this robot
+# boots front=video2/rear=video0, the reverse of start-all.sh's video0,2 defaults, so
+# the cameras swap unless pinned. Run scripts/detect-cameras.sh to confirm the paths,
+# then uncomment and set these (this robot: front=USB port 1.4, rear=USB port 1.3).
+#Environment=FRONT_DEVICE=/dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.4:1.0-video-index0
+#Environment=REAR_DEVICE=/dev/v4l/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.3:1.0-video-index0
+# Restart if the stack dies, but back off so a broken build does not hot-loop.
+Restart=on-failure
+RestartSec=5
+# start-all.sh cleans up its children on SIGTERM; kill the whole cgroup so nothing
+# is orphaned, give them time to stop, and treat a SIGTERM/SIGINT exit (143/130) as
+# success so `systemctl stop` does not leave the unit in a "failed" state.
+KillSignal=SIGTERM
+KillMode=control-group
+TimeoutStopSec=20
+SuccessExitStatus=143 130
+
+[Install]
+WantedBy=multi-user.target

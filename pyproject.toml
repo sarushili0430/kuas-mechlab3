@@ -1,0 +1,98 @@
+# Tool configuration only — dependencies are managed via requirements*.txt and,
+# for ROS2 runtime deps, each package's package.xml (rosdep).
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+extend-exclude = "/(build|install|log)/"
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src/kuas_mechlab3"
+files = ["src/kuas_mechlab3/kuas_mechlab3", "src/kuas_mechlab3/test"]
+strict = true
+
+[[tool.mypy.overrides]]
+# ROS2 client libraries and generated message packages are only importable from
+# inside a sourced ROS2 environment (not via pip), so the standalone lint job
+# cannot resolve them. Add new ROS modules here as you start importing them.
+module = [
+    "rclpy.*",
+    "rcl_interfaces.*",
+    "std_msgs.*",
+    "geometry_msgs.*",
+    "sensor_msgs.*",
+    "nav_msgs.*",
+    "tf2_ros.*",
+    "launch.*",
+    "launch_ros.*",
+    "ament_index_python.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pyserial is an apt/pip runtime dep (declared as python3-serial in package.xml);
+# the standalone lint job does not install it, so let mypy treat it as untyped.
+module = ["serial.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# OpenCV (python3-opencv) and numpy come from apt/rosdep on the robot, not the
+# standalone lint env, so let mypy treat them as untyped (same as pyserial above).
+module = ["cv2.*", "numpy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# websockets (python3-websockets) is an apt/rosdep runtime dep for the teleop
+# WebSocket bridge; the standalone lint job does not install it, so let mypy
+# treat it as untyped (same rationale as pyserial / cv2 above).
+module = ["websockets.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# ultralytics (YOLOv8) is a pip-only ML dep pulled in on the robot for the
+# traffic-light detector, not the standalone lint env, so let mypy treat it as
+# untyped (same rationale as cv2 / numpy above). It is not a rosdep key, so it
+# is installed via `pip install ultralytics` rather than declared in package.xml.
+module = ["ultralytics.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src/kuas_mechlab3"]
+testpaths = ["src/kuas_mechlab3/test"]
+# NOTE: coverage flags (--cov ...) are intentionally NOT set here. `colcon test`
+# discovers this same config when running the package tests inside the ROS2
+# container, where pytest-cov is not installed. The standalone test workflow
+# passes the --cov flags on the command line instead.
+
+[tool.coverage.run]
+branch = true
+source = ["kuas_mechlab3"]
+# The ROS2 nodes and the pyserial I/O wrapper import rclpy / pyserial, which the
+# standalone pytest job cannot load, so they are exercised by `colcon test`, not
+# here. Omit them so this report measures only the pure-Python surface (matching
+# the repo's "pure Python = pytest / ROS = colcon" split) instead of a misleading 0%.
+omit = [
+    "*/drive/serial_link.py",
+    "*/drive/mbed_driver.py",
+    "*/drive/teleop_keyboard.py",
+    "*/drive/teleop_server.py",
+    "*/drive/teleop_ws_client.py",
+    "*/camera/capture.py",
+    "*/camera/camera_node.py",
+    "*/camera/mjpeg_server.py",
+    "*/record_server.py",
+    "*/traffic/traffic_light_node.py",
+    "*/traffic/traffic_subscriber.py",
+    "*/traffic/qr_detector.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.commitizen]
+# Enforce the Conventional Commits style (feat:, fix:, docs:, refactor:, ...).
+# Used by `cz check` in the commit-msg hook and the guided `cz commit` prompt.
+name = "cz_conventional_commits"
+# Version bumping / changelog generation are left disabled for now; the package
+# version is tracked in src/kuas_mechlab3/package.xml. Enable later if desired.

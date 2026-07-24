@@ -1,0 +1,15 @@
+# Development tooling for the standalone lint / test CI jobs.
+# (ROS2 runtime dependencies are declared per-package in package.xml / rosdep.)
+-r requirements.txt
+
+black>=25.1
+mypy>=1.15
+pytest>=8.3
+pytest-cov>=6.0
+
+# Local git hooks (pre-commit checks). After installing, run: lefthook install
+lefthook>=1.7
+
+# Conventional Commits: validates commit messages (commit-msg hook) and
+# provides the guided `cz commit` prompt.
+commitizen>=3.29

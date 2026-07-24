@@ -1,0 +1,70 @@
+name: Test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+  # PR にカバレッジ結果をコメントするために必要。
+  pull-requests: write
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest + coverage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest with coverage
+        # set -o pipefail: tee を挟んでも pytest が失敗したらジョブを落とす。
+        # term 出力は Job Summary 用、JSON はコメント整形用。
+        run: |
+          set -o pipefail
+          pytest --cov --cov-report=term-missing --cov-report=json \
+            | tee pytest-coverage.txt
+
+      - name: Write coverage to the job summary
+        # Actions の実行結果ページ（Summary）にカバレッジ表を表示する。
+        # push / PR のどちらでも、fork からの PR でも見られる。
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo '## Coverage report'
+            echo ''
+            echo '```'
+            cat pytest-coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment coverage on PR
+        # PR のときだけコメントする（push にはコメント先の PR がない）。
+        # fork からの PR は GITHUB_TOKEN が read-only でコメントできないため除外。
+        # サードパーティ Action は使わず、自前スクリプト（gh CLI）で投稿する。
+        if: >-
+          ${{ github.event_name == 'pull_request'
+              && github.event.pull_request.head.repo.fork == false
+              && !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COVERAGE_JSON: coverage.json
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/coverage-comment.sh

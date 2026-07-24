@@ -1,0 +1,66 @@
+"""Launch the traffic-light detector for the ML3 barrier task.
+
+Subscribes to the front camera's CompressedImage topic (published by camera_node
+/ cameras_launch) -- it does NOT open the /dev/video* device, so it runs
+alongside cameras_launch / start-all.sh without contending for the webcam. When
+it sees a green light it publishes "<team>Green" (e.g. "11Green") to
+traffic_light_topic, the string the on-field barrier opens for:
+
+    ros2 launch kuas_mechlab3 traffic_launch.py team_number:=11 \\
+        image_topic:=/front_camera/image_raw/compressed detect_interval:=1.0
+
+``detect_interval`` rate-limits the per-frame stage (JPEG decode + YOLO + HSV,
+default 1.0 s): at the camera's full 30 Hz the inference saturated the Pi's CPU
+and pushed it into thermal throttling, while a light only changes on a seconds
+scale. One inference takes ~520 ms wall on the robot, so intervals below that
+(the previous 0.4 s included) never actually skip a frame -- the node just runs
+back-to-back at ~123% CPU; 1.0 s halves that.
+
+Needs a camera publishing frames (cameras_launch or a camera_node) and the
+ultralytics pip package (`pip install ultralytics`; downloads yolov8n.pt on the
+first run, so pre-fetch it before an offline competition boot).
+"""
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+
+def generate_launch_description() -> LaunchDescription:
+    """Bring up the traffic-light detector subscribed to the camera topic."""
+    # ParameterValue pins the type so the string launch args reach the typed
+    # node parameters as int (a bare substitution would stay a string).
+    team_number = ParameterValue(LaunchConfiguration("team_number"), value_type=int)
+    image_topic = LaunchConfiguration("image_topic")
+    imgsz = ParameterValue(LaunchConfiguration("imgsz"), value_type=int)
+    detect_interval = ParameterValue(
+        LaunchConfiguration("detect_interval"), value_type=float
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("team_number", default_value="11"),
+            DeclareLaunchArgument(
+                "image_topic",
+                default_value="/front_camera/image_raw/compressed",
+            ),
+            DeclareLaunchArgument("imgsz", default_value="256"),
+            DeclareLaunchArgument("detect_interval", default_value="1.0"),
+            Node(
+                package="kuas_mechlab3",
+                executable="traffic_light",
+                name="traffic_light_node",
+                output="screen",
+                parameters=[
+                    {
+                        "team_number": team_number,
+                        "image_topic": image_topic,
+                        "imgsz": imgsz,
+                        "detect_interval": detect_interval,
+                    }
+                ],
+            ),
+        ]
+    )

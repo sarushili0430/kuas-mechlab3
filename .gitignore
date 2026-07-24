@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+coverage.json
+pytest-coverage.txt
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# colcon / ROS2 build artifacts
+build/
+install/
+log/
+
+# 録画した模倣学習データ（rosbag + meta.json）。容量が大きいのでコミットしない
+datasets/
+
+# Windows/WSL metadata (":Zone.Identifier" alternate data streams)
+*Zone.Identifier
+
+# editor / backup junk
+*.bak
+
+# YOLO weights — fetched by scripts/prefetch-model.sh, not committed (large binary)
+*.pt
+
+# competition field-details PDF — organizer material, keep out of a public repo
+/docs/Robot Challenge and Field Details 2026.pdf

@@ -1,0 +1,29 @@
+# systemd unit: serve the operator cockpit (docs/cockpit.html) over HTTP so the
+# driver can open it from another machine on the field network. Pairs with
+# kuas-mechlab3.service (the robot stack). Install the same way, or just run
+# scripts/install-services.sh:
+#
+#   sudo cp scripts/ml3-cockpit.service /etc/systemd/system/
+#   sudoedit /etc/systemd/system/ml3-cockpit.service   # set User / WorkingDirectory
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ml3-cockpit.service
+#
+# WorkingDirectory must hold the cockpit as index.html (copy docs/cockpit.html
+# there). The cockpit reaches the robot over the teleop WebSocket (:9001) and the
+# MJPEG stream (:8080), which kuas-mechlab3.service already serves.
+
+[Unit]
+Description=ML3 operator cockpit (static HTTP server on :8000)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# CHANGE these two to match your robot (README uses the `pi` user under $HOME).
+User=pi
+WorkingDirectory=/home/pi/cockpit-serve
+ExecStart=/usr/bin/python3 -m http.server 8000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>kuas_mechlab3</name>
+  <version>0.0.0</version>
+  <description>KUAS MechLab3 ROS2 package.</description>
+  <maintainer email="k.fuke@emobi.co.jp">Koyu Fuke</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-websockets</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <!-- record_episodes.py が ros2 bag record でデモ走行を記録するため -->
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_storage_default_plugins</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
