@@ -15,6 +15,10 @@ htmlcov/
 .venv/
 venv/
 
+# uv dependency lock — regenerated on the fly by `uv run` (mcp-server), so it
+# shows up on any machine that runs the server; treat it like .venv, not source
+uv.lock
+
 # colcon / ROS2 build artifacts
 build/
 install/
