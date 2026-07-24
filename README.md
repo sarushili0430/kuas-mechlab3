@@ -236,7 +236,7 @@ ML3 4輪スキッドステアを動かす `kuas_mechlab3.drive` サブパッケ�
 | `protocol.py` | ワイヤ形式生成 / テレメトリ解析（文字列のみ） | pytest |
 | `serial_link.py` | シリアルポート I/O（pyserial、`protocol` に委譲） | colcon |
 | `mbed_driver.py` | ROS I/O + フェイルセーフ（ウォッチドッグ / 終了時停止） | colcon |
-| `teleop_keyboard.py` | tty 入力 → cmd_vel | colcon |
+| `teleop_keyboard.py` | tty 入力 → cmd_vel（走行 WASD）+ servo_cmd（腕＝矢印キー） | colcon |
 
 ### 実行（ROS2 Humble 上）
 
@@ -249,6 +249,18 @@ ros2 launch kuas_mechlab3 drivetrain_launch.py
 # ターミナルB: teleop（tty が要るので別ターミナルで）
 ros2 run kuas_mechlab3 teleop_keyboard
 ```
+
+キー割り当て（走行と腕を同じ画面で操作できる）:
+
+| キー | 動作 | publish 先 |
+| --- | --- | --- |
+| `w` / `s` | 前進 / 後退（押している間だけ） | `cmd_vel` |
+| `a` / `d` | 左旋回 / 右旋回（押している間だけ） | `cmd_vel` |
+| `q` | 停止 | `cmd_vel` |
+| `↑` / `↓` | 肘サーボ +/-（縦方向、`arm_step` ずつ） | `servo_cmd` |
+| `→` / `←` | 肩サーボ +/-（横方向、`arm_step` ずつ） | `servo_cmd` |
+
+走行キーは離すと `hold_timeout` で 0 に減衰して止まる。腕は firmware が最後のパルスを保持する（set-and-hold）ので、矢印キーで角度が変わったときだけ `servo_cmd` を publish する（起動時は現在姿勢のまま。最初の矢印キーで動き出す）。腕のパラメータは `arm_step`（既定 2.0 deg/キー）、`shoulder_start_deg` / `elbow_start_deg`（既定 90.0、内部の初期目標角。起動時には送らない）。
 
 ### 主要パラメータ（mbed_driver）
 
