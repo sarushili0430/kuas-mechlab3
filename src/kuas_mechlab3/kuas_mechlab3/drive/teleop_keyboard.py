@@ -37,8 +37,8 @@ BANNER = """\
      a = turn left      d = turn right
      q = stop
    ARM -- arrow keys nudge & hold:
-     Up / Down    = shoulder + / -
-     Right / Left = elbow    + / -
+     Up / Down    = elbow    + / -   (vertical)
+     Right / Left = shoulder + / -   (horizontal)
    Ctrl+C = quit (auto-stops the wheels)
 ============================================"""
 
@@ -115,14 +115,16 @@ class TeleopKeyboard(Node):  # type: ignore[misc]
             self._set(0.0, -self._ang)
         elif key == "q":
             self._set(0.0, 0.0)
+        # Up/Down drive the vertical joint (elbow); Left/Right the horizontal
+        # joint (shoulder) -- matching how the arm actually moves on the robot.
         elif key == "UP":
-            self._nudge_arm(self._arm_step, 0.0)
-        elif key == "DOWN":
-            self._nudge_arm(-self._arm_step, 0.0)
-        elif key == "RIGHT":
             self._nudge_arm(0.0, self._arm_step)
-        elif key == "LEFT":
+        elif key == "DOWN":
             self._nudge_arm(0.0, -self._arm_step)
+        elif key == "RIGHT":
+            self._nudge_arm(self._arm_step, 0.0)
+        elif key == "LEFT":
+            self._nudge_arm(-self._arm_step, 0.0)
 
     def _tick(self) -> None:
         """Drain buffered keys, apply hold-timeout decay, publish the drive target."""

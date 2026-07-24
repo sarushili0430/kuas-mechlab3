@@ -257,8 +257,8 @@ ros2 run kuas_mechlab3 teleop_keyboard
 | `w` / `s` | 前進 / 後退（押している間だけ） | `cmd_vel` |
 | `a` / `d` | 左旋回 / 右旋回（押している間だけ） | `cmd_vel` |
 | `q` | 停止 | `cmd_vel` |
-| `↑` / `↓` | 肩サーボ +/-（`arm_step` ずつ） | `servo_cmd` |
-| `→` / `←` | 肘サーボ +/-（`arm_step` ずつ） | `servo_cmd` |
+| `↑` / `↓` | 肘サーボ +/-（縦方向、`arm_step` ずつ） | `servo_cmd` |
+| `→` / `←` | 肩サーボ +/-（横方向、`arm_step` ずつ） | `servo_cmd` |
 
 走行キーは離すと `hold_timeout` で 0 に減衰して止まる。腕は firmware が最後のパルスを保持する（set-and-hold）ので、矢印キーで角度が変わったときだけ `servo_cmd` を publish する（起動時は現在姿勢のまま。最初の矢印キーで動き出す）。腕のパラメータは `arm_step`（既定 2.0 deg/キー）、`shoulder_start_deg` / `elbow_start_deg`（既定 90.0、内部の初期目標角。起動時には送らない）。
 
