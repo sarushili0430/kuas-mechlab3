@@ -15,10 +15,13 @@ nothing) is delegated to ``light_logic.status_message`` so that output IO
 contract is unit-tested by pytest without a ROS2 environment or a camera.
 
 The whole per-frame stage (JPEG decode + YOLO + HSV) is rate-limited by the
-shared ``throttle.DecodeThrottle`` (``detect_interval``, default 0.4 s =
-2.5 Hz): running YOLO at the camera's full 30 Hz saturated the Pi (~140% CPU
-measured, thermal soft-throttling at 83 °C) and starved the rest of the
-stack, while a traffic light only changes on a seconds scale.
+shared ``throttle.DecodeThrottle`` (``detect_interval``, default 1.0 s):
+running YOLO at the camera's full 30 Hz saturated the Pi (~140% CPU measured,
+thermal soft-throttling at 83 °C) and starved the rest of the stack, while a
+traffic light only changes on a seconds scale. The interval must exceed the
+inference itself (~520 ms wall measured on the robot at imgsz=256) or the
+throttle never actually skips: at the previous 0.4 s the node ran inference
+back-to-back (~123% CPU); at 1.0 s it drops to ~50%.
 
 Requires ``ultralytics`` (YOLOv8), a pip package rather than a rosdep key:
 ``pip install ultralytics``.
@@ -62,7 +65,7 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
         self.declare_parameter("image_topic", "/front_camera/image_raw/compressed")
         self.declare_parameter("model", "yolov8n.pt")
         self.declare_parameter("imgsz", 256)
-        self.declare_parameter("detect_interval", 0.4)
+        self.declare_parameter("detect_interval", 1.0)
         self.declare_parameter("show_window", False)
 
         self._team_number = int(self.get_parameter("team_number").value)
@@ -96,7 +99,7 @@ class TrafficLightDetector(Node):  # type: ignore[misc]
     def _on_image(self, msg: CompressedImage) -> None:
         """Decode one camera frame (rate-limited) and publish its colour status."""
         # Bail before the JPEG decode so a skipped frame costs nothing (same
-        # pattern as qr_detector). The light cannot be missed at 2.5 Hz: it
+        # pattern as qr_detector). The light cannot be missed at 1 Hz: it
         # stays green for seconds, not frames.
         if not self._throttle.should_decode(self._now_s()):
             return
