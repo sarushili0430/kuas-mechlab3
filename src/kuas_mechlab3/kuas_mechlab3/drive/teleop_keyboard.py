@@ -14,6 +14,7 @@ The serial port and the kinematics stay entirely out of this node; it only
 speaks the ROS topics mbed_driver already subscribes to (cmd_vel / servo_cmd).
 """
 
+import os
 import select
 import sys
 import termios
@@ -144,28 +145,39 @@ def _clamp_deg(deg: float) -> float:
     return max(ARM_MIN_DEG, min(ARM_MAX_DEG, deg))
 
 
+_ARROW_NAMES = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT"}
+
+
+def _read_byte() -> str:
+    """Read exactly one pending byte from stdin, at the fd level, or '' if none.
+
+    Uses os.read on the raw file descriptor rather than sys.stdin.read: a
+    buffered sys.stdin would pull a whole escape sequence into its own user-space
+    buffer on the first read, after which select() -- which only sees the fd --
+    reports "no input" and the buffered '[A' suffix is dropped (arrow keys then
+    never decode). Keeping both select() and the read on the same fd, one byte at
+    a time, means a read never over-reads and the next select() stays truthful.
+    """
+    if not select.select([sys.stdin], [], [], 0)[0]:
+        return ""
+    data = os.read(sys.stdin.fileno(), 1)
+    return data.decode("latin-1") if data else ""
+
+
 def _read_key() -> str:
-    """Return one buffered keystroke token without blocking, or '' if none.
+    """Return one keystroke token without blocking, or '' if none is ready.
 
     Ordinary keys come back as themselves (e.g. 'w'). The four arrow keys, which
     the terminal sends as a 3-byte CSI escape (ESC '[' 'A'..'D'), are decoded to
     'UP' / 'DOWN' / 'RIGHT' / 'LEFT' so callers match on a name, not raw bytes.
+    A lone ESC (no CSI follow-up ready) returns '' and is ignored.
     """
-    if not select.select([sys.stdin], [], [], 0)[0]:
-        return ""
-    ch = sys.stdin.read(1)
+    ch = _read_byte()
     if ch != "\x1b":
         return ch
-    # Escape byte: pull the rest of a CSI arrow sequence if it is already
-    # buffered (a bare ESC leaves the follow-up selects empty and returns "").
-    if not select.select([sys.stdin], [], [], 0)[0]:
+    if _read_byte() != "[":
         return ""
-    if sys.stdin.read(1) != "[":
-        return ""
-    if not select.select([sys.stdin], [], [], 0)[0]:
-        return ""
-    final = sys.stdin.read(1)
-    return {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT"}.get(final, "")
+    return _ARROW_NAMES.get(_read_byte(), "")
 
 
 def main(args: list[str] | None = None) -> None:
